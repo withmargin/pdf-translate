@@ -179,6 +179,8 @@ pub fn overlay_inplace(
         }
 
         let page_id = page_ids[page_idx];
+        let (_, _, page_w, _) = source.get_page_media_box(page_idx)?;
+        let page_margin = 36.0_f64; // 0.5 inch minimum margin
 
         let original_content = source
             .get_page_content_data(page_idx)
@@ -222,13 +224,17 @@ pub fn overlay_inplace(
             let use_cjk = needs_cjk && fonts::text_needs_cjk(&clean_text);
             let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
 
+            // Cap width so text doesn't exceed page boundary minus margin
+            let max_right = (page_w as f64 - page_margin).max(0.0);
+            let effective_width = block.width.min(max_right - block.x).max(0.0);
+
             text_ops.push_str(&content_stream::generate_text_ops(
                 &clean_text,
                 font_name,
                 block.font_size as f32,
                 x,
                 block.y as f32,
-                block.width as f32,
+                effective_width as f32,
                 block.height as f32,
                 block.color,
                 if use_cjk { cjk_ctx.as_ref() } else { None },
