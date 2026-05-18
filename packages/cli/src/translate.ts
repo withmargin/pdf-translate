@@ -15,13 +15,14 @@ export async function translatePages(
   options: TranslateOptions,
 ): Promise<string[]> {
   const client = createClient(options.provider);
-  const allBlocks = pages.flatMap((p) => p.blocks);
-  const results = new Array<string>(allBlocks.length).fill("");
-
-  const batches = createBatches(allBlocks);
+  const results: string[] = [];
   let translated = 0;
+  const totalBlocks = pages.reduce((sum, p) => sum + p.blocks.length, 0);
 
-  for (const batch of batches) {
+  // Translate page by page to prevent cross-page context bleeding
+  for (const page of pages) {
+    const batches = createBatches(page.blocks);
+    for (const batch of batches) {
     const batchTexts = batch.blocks.map((b) => b.text);
     const numberedText = batchTexts
       .map((text, i) => `[${i}] ${text}`)
@@ -56,14 +57,13 @@ export async function translatePages(
     const content = response.choices[0]?.message?.content || "";
     const batchResults = parseNumberedResponse(content, batchTexts.length);
 
-    for (let i = 0; i < batchResults.length; i++) {
-      results[batch.startIndex + i] = batchResults[i];
-    }
+    results.push(...batchResults);
 
     translated += batch.blocks.length;
     process.stderr.write(
-      `  Translated ${translated}/${allBlocks.length} blocks (batch ${batches.indexOf(batch) + 1}/${batches.length})\n`,
+      `  Translated ${translated}/${totalBlocks} blocks (page ${page.page})\n`,
     );
+    }
   }
 
   return results;
