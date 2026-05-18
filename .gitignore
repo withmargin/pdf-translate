@@ -1,0 +1,29 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+*.tgz
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+*.node
+*.wasm
+libpdfium.*
+
+# Test outputs
+crates/core/tests/fixtures/output_*
