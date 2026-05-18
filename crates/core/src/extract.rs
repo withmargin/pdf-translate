@@ -245,4 +245,28 @@ mod tests {
         assert_eq!(merged[0].x, 50.0);
         assert!((merged[0].width - 110.0).abs() < 0.1); // 50+60=110 to 110+50=160, width=110
     }
+
+    #[test]
+    fn test_merge_never_merges_tab_prefixed_blocks() {
+        // TOC: title at x=54 followed by "\t3" at x=278 — must NOT merge
+        let blocks = vec![
+            make_block(0, "The startup lifecycle", 54.0, 474.2, 226.8, 12.0),
+            make_block(0, "\t3", 278.4, 474.2, 105.6, 12.0),
+        ];
+        let merged = merge_same_line_blocks(blocks);
+        assert_eq!(merged.len(), 2, "tab-prefixed block must stay separate");
+        assert_eq!(merged[0].text, "The startup lifecycle");
+        assert_eq!(merged[1].text, "\t3");
+    }
+
+    #[test]
+    fn test_merge_does_not_merge_distant_blocks() {
+        // Same line but large x gap (title at left, page number at right)
+        let blocks = vec![
+            make_block(0, "Scale stage", 54.0, 304.2, 65.1, 12.0),
+            make_block(0, "25", 370.1, 304.2, 13.9, 12.0),
+        ];
+        let merged = merge_same_line_blocks(blocks);
+        assert_eq!(merged.len(), 2, "distant blocks on same line must stay separate");
+    }
 }

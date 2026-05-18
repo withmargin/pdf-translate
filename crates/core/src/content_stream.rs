@@ -134,25 +134,40 @@ pub fn generate_text_ops(
     let mut cursor_x = x;
 
     for seg in &segments {
-        ops.push_str("BT\n");
-        ops.push_str("0.078 0.078 0.075 rg\n");
-
         let has_non_ascii = seg.text.chars().any(|c| c as u32 > 127);
 
         if seg.is_cjk || has_non_ascii {
-            // Use CJK font with hex encoding for CJK chars and non-ASCII (smart quotes, dashes, etc.)
-            ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
-            ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
-            let mut hex = String::new();
+            // Render char-by-char: CJK font for chars with glyphs, Helvetica for fallback
             for c in seg.text.chars() {
                 let gid = (ctx.glyph_lookup)(c);
-                hex.push_str(&format!("{:04X}", gid));
-                ctx.glyph_map.borrow_mut().push((gid, c));
-                cursor_x += (ctx.cjk_char_width)(c) / 1000.0 * font_size;
+                ops.push_str("BT\n");
+                ops.push_str("0.078 0.078 0.075 rg\n");
+                if gid != 0 {
+                    ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
+                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+                    ops.push_str(&format!("<{:04X}> Tj\n", gid));
+                    ctx.glyph_map.borrow_mut().push((gid, c));
+                    cursor_x += (ctx.cjk_char_width)(c) / 1000.0 * font_size;
+                } else {
+                    // Fallback to Helvetica for chars missing from CJK font
+                    ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
+                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+                    let escaped = match c {
+                        '\\' => "\\\\".to_string(),
+                        '(' => "\\(".to_string(),
+                        ')' => "\\)".to_string(),
+                        _ => c.to_string(),
+                    };
+                    ops.push_str(&format!("({escaped}) Tj\n"));
+                    cursor_x += helvetica_char_width(c) / 1000.0 * font_size;
+                }
+                ops.push_str("ET\n");
             }
-            ops.push_str(&format!("<{hex}> Tj\n"));
+            continue;
         } else {
             // Pure ASCII Latin — use Helvetica with literal string
+            ops.push_str("BT\n");
+            ops.push_str("0.078 0.078 0.075 rg\n");
             ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
             ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
             let escaped = seg.text
@@ -368,7 +383,9 @@ mod tests {
         );
         let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
         assert!(ops.contains("/CJKFont 12.0000 Tf"));
-        assert!(ops.contains("<4FC459E1> Tj"));
+        // Per-char rendering: each char gets its own BT/ET
+        assert!(ops.contains("<4FC4> Tj"));
+        assert!(ops.contains("<59E1> Tj"));
         let map = ctx.into_glyph_map();
         assert_eq!(map.len(), 2);
     }
@@ -381,7 +398,8 @@ mod tests {
         );
         let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, Some(&ctx));
         assert!(ops.contains("/NotoSansCJKtc 12.0000 Tf"));
-        assert!(ops.contains("<4F60597D> Tj"));
+        assert!(ops.contains("<4F60> Tj"));
+        assert!(ops.contains("<597D> Tj"));
     }
 
     #[test]
@@ -484,10 +502,12 @@ Q
             Box::new(|_c: char| 1000.0),
         );
         let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
+        // CJK chars use CJK font
         assert!(ops.contains("/CJKFont"));
+        assert!(ops.contains(&format!("<{:04X}> Tj", '打' as u16)));
+        // Latin chars use Helvetica
         assert!(ops.contains("/TransLatin"));
-        assert!(ops.contains("打造".chars().map(|c| format!("{:04X}", c as u16)).collect::<String>().as_str()));
-        assert!(ops.contains("(AI)"));
+        assert!(ops.contains("(AI) Tj"));
     }
 
     // === Special character handling tests ===
