@@ -149,16 +149,23 @@ pub fn generate_text_ops(
                     ctx.glyph_map.borrow_mut().push((gid, c));
                     cursor_x += (ctx.cjk_char_width)(c) / 1000.0 * font_size;
                 } else {
-                    // Fallback to Helvetica for chars missing from CJK font
+                    // Fallback to Helvetica with WinAnsiEncoding hex for non-ASCII
                     ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
                     ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
-                    let escaped = match c {
-                        '\\' => "\\\\".to_string(),
-                        '(' => "\\(".to_string(),
-                        ')' => "\\)".to_string(),
-                        _ => c.to_string(),
-                    };
-                    ops.push_str(&format!("({escaped}) Tj\n"));
+                    if let Some(byte) = unicode_to_winansi(c) {
+                        ops.push_str(&format!("<{:02X}> Tj\n", byte));
+                    } else if c.is_ascii() {
+                        let escaped = match c {
+                            '\\' => "\\\\".to_string(),
+                            '(' => "\\(".to_string(),
+                            ')' => "\\)".to_string(),
+                            _ => c.to_string(),
+                        };
+                        ops.push_str(&format!("({escaped}) Tj\n"));
+                    } else {
+                        // Last resort: skip unrenderable char
+                        ops.push_str("( ) Tj\n");
+                    }
                     cursor_x += helvetica_char_width(c) / 1000.0 * font_size;
                 }
                 ops.push_str("ET\n");
@@ -302,6 +309,30 @@ pub fn helvetica_char_width(c: char) -> f32 {
         'y' => 500.0, 'z' => 500.0,
         '{' => 334.0, '|' => 260.0, '}' => 334.0, '~' => 584.0,
         _ => 556.0,
+    }
+}
+
+/// Map Unicode codepoints to WinAnsiEncoding bytes for Helvetica.
+fn unicode_to_winansi(c: char) -> Option<u8> {
+    match c {
+        '\u{2026}' => Some(0x85), // …
+        '\u{2018}' => Some(0x91), // '
+        '\u{2019}' => Some(0x92), // '
+        '\u{201C}' => Some(0x93), // "
+        '\u{201D}' => Some(0x94), // "
+        '\u{2022}' => Some(0x95), // •
+        '\u{2013}' => Some(0x96), // –
+        '\u{2014}' => Some(0x97), // —
+        '\u{2122}' => Some(0x99), // ™
+        '\u{00AB}' => Some(0xAB), // «
+        '\u{00BB}' => Some(0xBB), // »
+        '\u{00A9}' => Some(0xA9), // ©
+        '\u{00AE}' => Some(0xAE), // ®
+        '\u{00B0}' => Some(0xB0), // °
+        '\u{00D7}' => Some(0xD7), // ×
+        '\u{00F7}' => Some(0xF7), // ÷
+        c if (c as u32) >= 0xA0 && (c as u32) <= 0xFF => Some(c as u8), // Latin-1 supplement
+        _ => None,
     }
 }
 
