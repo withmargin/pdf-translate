@@ -3,10 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 permissions:
-  contents: write
+  id-token: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,7 +37,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -48,8 +49,7 @@ jobs:
 
       - name: Copy binary to package
         shell: bash
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} packages/${{ matrix.package }}/
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} packages/${{ matrix.package }}/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -57,69 +57,49 @@ jobs:
           name: ${{ matrix.package }}
           path: packages/${{ matrix.package }}/
 
-  build-wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack
-
-      - name: Build WASM
-        run: |
-          cd crates/core
-          wasm-pack build --target nodejs --out-dir ../../packages/pdf-translate-wasm/wasm
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pdf-translate-wasm
-          path: packages/pdf-translate-wasm/
-
   publish:
-    needs: [build, build-wasm]
+    needs: build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: packages/
+          path: artifacts/
 
-      - name: Make binaries executable
+      - name: Copy binaries to packages
         run: |
-          chmod +x packages/pdf-translate-darwin-arm64/pdf-translate-core || true
-          chmod +x packages/pdf-translate-darwin-x64/pdf-translate-core || true
-          chmod +x packages/pdf-translate-linux-x64-gnu/pdf-translate-core || true
+          for pkg in pdf-translate-darwin-arm64 pdf-translate-darwin-x64 pdf-translate-linux-x64-gnu pdf-translate-win32-x64; do
+            cp artifacts/$pkg/* packages/$pkg/
+            chmod +x packages/$pkg/pdf-translate-core* || true
+            ls -lh packages/$pkg/
+          done
 
       - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for pkg in pdf-translate-darwin-arm64 pdf-translate-darwin-x64 pdf-translate-linux-x64-gnu pdf-translate-win32-x64 pdf-translate-wasm; do
+          for pkg in pdf-translate-darwin-arm64 pdf-translate-darwin-x64 pdf-translate-linux-x64-gnu pdf-translate-win32-x64; do
             cd packages/$pkg
-            npm publish --access public || true
+            npm publish --access public --provenance || echo "Skipped $pkg (may already exist)"
             cd ../..
           done
 
-      - name: Build and publish CLI
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build CLI
+        run: pnpm --filter pdf-translate build
+
+      - name: Publish CLI
         run: |
           cd packages/cli
-          pnpm install --no-frozen-lockfile
-          pnpm build
-          npm publish --access public
+          npm publish --access public --provenance
