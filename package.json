@@ -6,5 +6,7 @@
     "build": "pnpm -r build",
     "build:core": "cargo build --release --manifest-path crates/core/Cargo.toml",
     "build:cli": "pnpm --filter pdf-translate build"
-  }
+  },
+  "name": "",
+  "version": ""
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@margin/pdf-translate-wasm",
+  "name": "@withmargin/pdf-translate-wasm",
   "version": "0.1.0",
   "description": "pdf-translate WASM fallback (platform-independent)",
   "license": "MIT",

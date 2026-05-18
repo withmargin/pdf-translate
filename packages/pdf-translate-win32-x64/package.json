@@ -1,5 +1,5 @@
 {
-  "name": "@margin/pdf-translate-win32-x64",
+  "name": "@withmargin/pdf-translate-win32-x64",
   "version": "0.1.0",
   "description": "pdf-translate binary for Windows x64",
   "license": "MIT",

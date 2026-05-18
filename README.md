@@ -1,5 +1,9 @@
 # pdf-translate
 
+[![npm version](https://img.shields.io/npm/v/pdf-translate.svg)](https://www.npmjs.com/package/pdf-translate)
+[![license](https://img.shields.io/github/license/withmargin/pdf-translate)](https://github.com/withmargin/pdf-translate/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/withmargin/pdf-translate)](https://github.com/withmargin/pdf-translate)
+
 Translate PDF documents using LLMs. Supports OpenAI, Claude, Gemini, and any OpenAI-compatible API.
 
 Preserves original PDF layout — backgrounds, images, shapes, and logos stay intact. Only text is replaced with translations.

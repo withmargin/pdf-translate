@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PLATFORM_PACKAGES: Record<string, string> = {
-  "darwin-arm64": "@margin/pdf-translate-darwin-arm64",
-  "darwin-x64": "@margin/pdf-translate-darwin-x64",
-  "linux-x64": "@margin/pdf-translate-linux-x64-gnu",
-  "win32-x64": "@margin/pdf-translate-win32-x64",
+  "darwin-arm64": "@withmargin/pdf-translate-darwin-arm64",
+  "darwin-x64": "@withmargin/pdf-translate-darwin-x64",
+  "linux-x64": "@withmargin/pdf-translate-linux-x64-gnu",
+  "win32-x64": "@withmargin/pdf-translate-win32-x64",
 };
 
 function getBinaryPath(): string {

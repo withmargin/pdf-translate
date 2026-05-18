@@ -1,5 +1,5 @@
 {
-  "name": "@margin/pdf-translate-darwin-x64",
+  "name": "@withmargin/pdf-translate-darwin-x64",
   "version": "0.1.0",
   "description": "pdf-translate binary for macOS x64 (Intel)",
   "license": "MIT",

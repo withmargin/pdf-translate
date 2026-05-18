@@ -5,8 +5,7 @@ export default defineConfig({
   output: {
     dir: "dist",
     format: "esm",
-    banner: "#!/usr/bin/env node",
   },
   platform: "node",
-  external: [/^node:/, "openai"],
+  external: [/^node:/],
 });

@@ -23,11 +23,11 @@
     "openai": "^5.0.0"
   },
   "optionalDependencies": {
-    "@margin/pdf-translate-darwin-arm64": "0.1.0",
-    "@margin/pdf-translate-darwin-x64": "0.1.0",
-    "@margin/pdf-translate-linux-x64-gnu": "0.1.0",
-    "@margin/pdf-translate-win32-x64": "0.1.0",
-    "@margin/pdf-translate-wasm": "0.1.0"
+    "@withmargin/pdf-translate-darwin-arm64": "0.1.0",
+    "@withmargin/pdf-translate-darwin-x64": "0.1.0",
+    "@withmargin/pdf-translate-linux-x64-gnu": "0.1.0",
+    "@withmargin/pdf-translate-win32-x64": "0.1.0",
+    "@withmargin/pdf-translate-wasm": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
