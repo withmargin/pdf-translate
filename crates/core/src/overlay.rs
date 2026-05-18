@@ -273,6 +273,13 @@ pub fn overlay_inplace(
             }
         }
 
+        // Step 6: Remove link annotations (they cause stale underlines)
+        if let Ok(page_obj) = doc.get_object_mut(page_id) {
+            if let Object::Dictionary(dict) = page_obj {
+                dict.remove(b"Annots");
+            }
+        }
+
         eprintln!(
             "  Page {page_idx}: replaced content stream ({} blocks)",
             blocks.len()
