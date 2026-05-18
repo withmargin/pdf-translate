@@ -142,10 +142,13 @@ pub fn generate_text_ops(
     let mut cursor_y = y;
     let mut line_height = font_size * 1.3;
 
-    // Only wrap if original block was multi-line AND translated text exceeds width
+    // Wrap if: original was multi-line and text exceeds block width,
+    // OR text would go beyond a reasonable page boundary (prevents off-page overflow)
     let total_width = calculate_text_width(text, font_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
     let original_was_multiline = max_height > font_size * 1.5;
-    let needs_wrap = max_width > 0.0 && total_width > max_width * 1.05 && original_was_multiline;
+    let exceeds_block = max_width > 0.0 && total_width > max_width * 1.05;
+    let exceeds_page = total_width > 500.0; // absolute safety limit
+    let needs_wrap = exceeds_block && (original_was_multiline || exceeds_page);
 
     // If wrapping and would overflow height, compress line height
     if needs_wrap && max_height > font_size * 1.5 {
