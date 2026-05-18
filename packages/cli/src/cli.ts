@@ -1,19 +1,54 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { resolve, basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { extractText, overlayTranslations } from "./bridge.js";
-import { resolveProvider, listModels, KNOWN_PROVIDERS } from "./providers.js";
+import { extractText, extractHtml, overlayTranslations } from "./bridge.js";
+import {
+  resolveProvider,
+  listModels,
+  KNOWN_PROVIDERS,
+} from "./providers.js";
 import { translatePages } from "./translate.js";
+import type { TextBlock } from "./bridge.js";
+
+const VERSION = "0.1.1";
+
+function jsonOut(data: unknown) {
+  console.log(JSON.stringify(data, null, 2));
+}
+
+function fail(code: string, message: string, detail?: Record<string, unknown>): never {
+  const err = { error: code, message, ...detail };
+  console.error(JSON.stringify(err));
+  process.exit(1);
+}
+
+function shouldTranslate(text: string): boolean {
+  const trimmed = text.replace(/\t/g, "").trim();
+  if (!trimmed) return false;
+  if (/^\d+$/.test(trimmed)) return false;
+  return true;
+}
+
+function parsePageRange(
+  range: string | undefined,
+  totalPages: number,
+): { start: number; end: number } | undefined {
+  if (!range) return undefined;
+  const [s, e] = range.split("-").map(Number);
+  return { start: s, end: e ?? s };
+}
 
 const program = new Command();
 
 program
   .name("pdf-translate")
   .description("Translate PDF documents using LLMs")
-  .version("0.1.0");
+  .version(VERSION);
+
+// ── translate (default command) ──────────────────────────────────
 
 program
   .command("translate", { isDefault: true })
@@ -27,66 +62,96 @@ program
   .option("--api-key <key>", "API key (or set via environment variable)")
   .option("--base-url <url>", "Custom OpenAI-compatible API endpoint")
   .option("--pages <range>", "Page range to translate (e.g. '0-4' for first 5 pages)")
+  .option("--json", "Output structured JSON instead of human-readable text")
+  .option("--dry-run", "Preview translation plan without calling the LLM")
   .action(async (input: string, opts) => {
     const inputPath = resolve(input);
+    if (!existsSync(inputPath)) {
+      fail("FILE_NOT_FOUND", `File not found: ${inputPath}`);
+    }
+
     const outputPath =
       opts.output ||
-      join(
-        dirname(inputPath),
-        `${basename(inputPath, ".pdf")}.${opts.lang}.pdf`,
-      );
+      join(dirname(inputPath), `${basename(inputPath, ".pdf")}.${opts.lang}.pdf`);
 
-    const provider = resolveProvider({
-      provider: opts.provider,
-      model: opts.model,
-      apiKey: opts.apiKey,
-      baseUrl: opts.baseUrl,
-    });
+    const providerName = opts.provider || "openai";
+    const known = KNOWN_PROVIDERS[providerName];
+    const modelName = opts.model || known?.defaultModel || "unknown";
 
-    console.log(`Provider:  ${opts.provider || "openai"} (${provider.model})`);
-    console.log(`Input:     ${inputPath}`);
-    console.log(`Output:    ${outputPath}`);
-    console.log(`Language:  ${opts.sourceLang || "auto"} → ${opts.lang}`);
-    if (opts.pages) console.log(`Pages:     ${opts.pages}`);
-    console.log();
+    const provider = opts.dryRun
+      ? { apiKey: "", baseUrl: "", model: modelName }
+      : resolveProvider({
+          provider: opts.provider,
+          model: opts.model,
+          apiKey: opts.apiKey,
+          baseUrl: opts.baseUrl,
+        });
 
-    console.log("Extracting text from PDF...");
+    // Extract
     const extraction = extractText(inputPath);
-
-    // Filter pages if --pages specified
     let pagesToTranslate = extraction.pages;
-    if (opts.pages) {
-      const [start, end] = opts.pages.split("-").map(Number);
+    const pageRange = parsePageRange(opts.pages, extraction.total_pages);
+    if (pageRange) {
       pagesToTranslate = extraction.pages.filter(
-        (p) => p.page >= start && p.page <= (end ?? start),
+        (p) => p.page >= pageRange.start && p.page <= pageRange.end,
       );
     }
 
-    const blockCount = pagesToTranslate.reduce(
-      (sum, p) => sum + p.blocks.length,
-      0,
-    );
-    console.log(`  Found ${extraction.total_pages} total pages, translating ${pagesToTranslate.length} pages (${blockCount} text blocks)`);
-
-    if (blockCount === 0) {
-      console.log("No text found in selected pages.");
-      process.exit(1);
-    }
-
-    // Separate blocks into translatable vs pass-through
     const allBlocks = pagesToTranslate.flatMap((p) => p.blocks);
-    const shouldTranslate = (text: string) => {
-      const trimmed = text.replace(/\t/g, "").trim();
-      if (!trimmed) return false;
-      if (/^\d+$/.test(trimmed)) return false; // pure page numbers
-      return true;
-    };
-
     const translatableBlocks = allBlocks.filter((b) => shouldTranslate(b.text));
     const skipCount = allBlocks.length - translatableBlocks.length;
-    console.log(`Translating ${translatableBlocks.length} blocks (skipping ${skipCount} numbers/empty)...`);
 
-    // Build pages with only translatable blocks for the translation API
+    const plan = {
+      input: inputPath,
+      output: outputPath,
+      provider: opts.provider || "openai",
+      model: provider.model,
+      sourceLang: opts.sourceLang || "auto",
+      targetLang: opts.lang,
+      totalPages: extraction.total_pages,
+      selectedPages: pagesToTranslate.length,
+      totalBlocks: allBlocks.length,
+      translatableBlocks: translatableBlocks.length,
+      skippedBlocks: skipCount,
+      pageRange: pageRange || { start: 0, end: extraction.total_pages - 1 },
+    };
+
+    // ── dry-run: return plan without translating ──
+    if (opts.dryRun) {
+      if (opts.json) {
+        jsonOut({ status: "dry_run", plan });
+      } else {
+        console.log("Dry run — no API calls will be made.\n");
+        console.log(`Input:       ${plan.input}`);
+        console.log(`Output:      ${plan.output}`);
+        console.log(`Provider:    ${plan.provider} (${plan.model})`);
+        console.log(`Language:    ${plan.sourceLang} → ${plan.targetLang}`);
+        console.log(`Pages:       ${plan.selectedPages}/${plan.totalPages}`);
+        console.log(`Blocks:      ${plan.translatableBlocks} translatable, ${plan.skippedBlocks} skipped`);
+      }
+      return;
+    }
+
+    // ── human-readable progress ──
+    if (!opts.json) {
+      console.log(`Provider:  ${plan.provider} (${plan.model})`);
+      console.log(`Input:     ${plan.input}`);
+      console.log(`Output:    ${plan.output}`);
+      console.log(`Language:  ${plan.sourceLang} → ${plan.targetLang}`);
+      if (opts.pages) console.log(`Pages:     ${opts.pages}`);
+      console.log();
+      console.log(`Extracting: ${plan.totalPages} pages, ${plan.totalBlocks} blocks`);
+      console.log(`Translating ${plan.translatableBlocks} blocks (skipping ${plan.skippedBlocks})...`);
+    }
+
+    if (plan.translatableBlocks === 0) {
+      fail("NO_TEXT", "No translatable text found in selected pages.", {
+        totalBlocks: plan.totalBlocks,
+        skippedBlocks: plan.skippedBlocks,
+      });
+    }
+
+    // ── translate ──
     const translatablePages = pagesToTranslate.map((p) => ({
       ...p,
       blocks: p.blocks.filter((b) => shouldTranslate(b.text)),
@@ -98,16 +163,15 @@ program
       sourceLang: opts.sourceLang,
     });
 
-    // Merge: translatable blocks get translations, others keep original text
     let tIdx = 0;
     const mergedTranslations = allBlocks.map((block) => {
       if (shouldTranslate(block.text)) {
         return translations[tIdx++] || block.text;
       }
-      return block.text; // keep original (numbers, tabs, etc.)
+      return block.text;
     });
 
-    console.log("Writing translated PDF...");
+    // ── write PDF ──
     const overlayData = {
       blocks: allBlocks.map((block, i) => ({
         page: block.page,
@@ -123,27 +187,75 @@ program
 
     const tmpFile = join(tmpdir(), `pdf-translate-${Date.now()}.json`);
     writeFileSync(tmpFile, JSON.stringify(overlayData));
-
     try {
       overlayTranslations(inputPath, outputPath, tmpFile);
     } finally {
-      try {
-        unlinkSync(tmpFile);
-      } catch {
-        // ignore
-      }
+      try { unlinkSync(tmpFile); } catch {}
     }
 
-    console.log();
-    console.log(`Done! Translated PDF saved to: ${outputPath}`);
+    if (opts.json) {
+      jsonOut({
+        status: "success",
+        output: outputPath,
+        plan,
+        translated: plan.translatableBlocks,
+      });
+    } else {
+      console.log(`\nDone! Translated PDF saved to: ${outputPath}`);
+    }
   });
+
+// ── describe ─────────────────────────────────────────────────────
+
+program
+  .command("describe")
+  .description("Describe supported capabilities and parameters (for agents)")
+  .action(() => {
+    jsonOut({
+      name: "pdf-translate",
+      version: VERSION,
+      description: "Translate PDF documents using LLMs with layout preservation",
+      commands: {
+        translate: {
+          description: "Translate a PDF file",
+          args: { input: { type: "string", required: true, description: "Path to PDF file" } },
+          options: {
+            lang: { type: "string", default: "zh-TW", description: "Target language code" },
+            sourceLang: { type: "string", description: "Source language (auto-detect if omitted)" },
+            output: { type: "string", description: "Output file path" },
+            provider: { type: "string", enum: Object.keys(KNOWN_PROVIDERS), default: "openai" },
+            model: { type: "string", description: "Model name" },
+            pages: { type: "string", description: "Page range (e.g. '0-4')" },
+            json: { type: "boolean", description: "Structured JSON output" },
+            dryRun: { type: "boolean", description: "Preview plan without API calls" },
+          },
+        },
+        models: { description: "List available models from a provider" },
+        describe: { description: "Describe capabilities (this command)" },
+      },
+      providers: Object.fromEntries(
+        Object.entries(KNOWN_PROVIDERS).map(([k, v]) => [
+          k,
+          { defaultModel: v.defaultModel, envKey: v.envKey },
+        ]),
+      ),
+      limitations: [
+        "Multi-span lines may show gaps after translation",
+        "No text reflow for longer translations",
+        "CJK font adds ~16MB to output",
+      ],
+    });
+  });
+
+// ── models ───────────────────────────────────────────────────────
 
 program
   .command("models")
   .description("List available models from a provider")
-  .option("-p, --provider <name>", "LLM provider: openai, claude, gemini", "openai")
+  .option("-p, --provider <name>", "LLM provider", "openai")
   .option("--api-key <key>", "API key")
   .option("--base-url <url>", "Custom API endpoint")
+  .option("--json", "Output as JSON array")
   .action(async (opts) => {
     try {
       const models = await listModels({
@@ -152,18 +264,26 @@ program
         baseUrl: opts.baseUrl,
       });
 
-      const providerName = opts.provider || "openai";
-      const known = KNOWN_PROVIDERS[providerName];
-      const defaultModel = known?.defaultModel;
-
-      console.log(`Models from ${providerName} (${models.length} available):\n`);
-      for (const model of models) {
-        const marker = model === defaultModel ? " (default)" : "";
-        console.log(`  ${model}${marker}`);
+      if (opts.json) {
+        const providerName = opts.provider || "openai";
+        const known = KNOWN_PROVIDERS[providerName];
+        jsonOut({
+          provider: providerName,
+          defaultModel: known?.defaultModel,
+          models,
+        });
+      } else {
+        const providerName = opts.provider || "openai";
+        const known = KNOWN_PROVIDERS[providerName];
+        const defaultModel = known?.defaultModel;
+        console.log(`Models from ${providerName} (${models.length} available):\n`);
+        for (const model of models) {
+          const marker = model === defaultModel ? " (default)" : "";
+          console.log(`  ${model}${marker}`);
+        }
       }
     } catch (e) {
-      console.error(e instanceof Error ? e.message : String(e));
-      process.exit(1);
+      fail("MODEL_LIST_ERROR", e instanceof Error ? e.message : String(e));
     }
   });
 
