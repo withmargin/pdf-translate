@@ -204,6 +204,9 @@ pub fn overlay_inplace(
         let annot_rects = read_annot_rects(&doc, page_id);
         let has_link_annots = !annot_rects.is_empty();
 
+        // Compute column right boundaries from all blocks on this page
+        let column_rights = compute_column_boundaries(blocks, page_w as f64);
+
         let mut text_ops = String::new();
         for block in blocks {
             assert_eq!(block.page, page_idx, "Block page mismatch: block.page={} but processing page_idx={}", block.page, page_idx);
@@ -224,8 +227,9 @@ pub fn overlay_inplace(
             let use_cjk = needs_cjk && fonts::text_needs_cjk(&clean_text);
             let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
 
-            // Cap width so text doesn't exceed page boundary minus margin
-            let max_right = (page_w as f64 - page_margin).max(0.0);
+            // Cap width: use column boundary if available, else page boundary minus margin
+            let column_right = find_column_right(block.x, &column_rights);
+            let max_right = column_right.unwrap_or((page_w as f64 - page_margin).max(0.0));
             let effective_width = block.width.min(max_right - block.x).max(0.0);
 
             text_ops.push_str(&content_stream::generate_text_ops(
@@ -344,6 +348,45 @@ pub fn overlay_inplace(
     doc.save(output_path).context("saving PDF")?;
 
     Ok(())
+}
+
+/// Compute column right boundaries from blocks on a page.
+/// Groups blocks by x-position (within half page width as tolerance),
+/// returns sorted list of (column_left, column_right) pairs.
+fn compute_column_boundaries(blocks: &[&TranslatedBlock], page_w: f64) -> Vec<(f64, f64)> {
+    if blocks.is_empty() {
+        return vec![];
+    }
+
+    // Cluster blocks by x position
+    let mut clusters: Vec<(f64, f64, f64)> = vec![]; // (min_x, max_x, max_right)
+    let cluster_threshold = page_w * 0.1; // 10% of page width
+
+    for block in blocks {
+        let right = block.x + block.width;
+        let matched = clusters.iter_mut().find(|(min_x, _, _)| (block.x - *min_x).abs() < cluster_threshold);
+        if let Some(cluster) = matched {
+            cluster.0 = cluster.0.min(block.x);
+            cluster.1 = cluster.1.max(block.x);
+            cluster.2 = cluster.2.max(right);
+        } else {
+            clusters.push((block.x, block.x, right));
+        }
+    }
+
+    clusters.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    clusters.iter().map(|(min_x, _, max_right)| (*min_x, *max_right)).collect()
+}
+
+/// Find the right boundary for a block based on its column.
+fn find_column_right(block_x: f64, column_rights: &[(f64, f64)]) -> Option<f64> {
+    // Find the column this block belongs to
+    for (col_left, col_right) in column_rights {
+        if (block_x - col_left).abs() < 50.0 || (block_x >= *col_left && block_x <= *col_right) {
+            return Some(*col_right);
+        }
+    }
+    None
 }
 
 /// Read link annotation Rects from a page [x0, y0, x1, y1]
