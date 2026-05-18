@@ -94,9 +94,15 @@ fn merge_same_line_blocks(mut blocks: Vec<TextBlock>) -> Vec<TextBlock> {
 
     for block in blocks {
         let should_merge = merged.last().map_or(false, |prev: &TextBlock| {
-            (prev.y - block.y).abs() < y_threshold
-                && (prev.font_size - block.font_size).abs() < 0.5
-                && prev.page == block.page
+            let same_line = (prev.y - block.y).abs() < y_threshold;
+            let same_size = (prev.font_size - block.font_size).abs() < 0.5;
+            let same_page = prev.page == block.page;
+            // Only merge if the next block starts near where the previous one ends
+            // Large gaps (> 2x font size) indicate separate elements (e.g. title vs page number)
+            let prev_right = prev.x + prev.width;
+            let x_gap = block.x - prev_right;
+            let close_enough = x_gap < prev.font_size * 2.0;
+            same_line && same_size && same_page && close_enough
         });
 
         if should_merge {
