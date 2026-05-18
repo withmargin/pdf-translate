@@ -165,7 +165,7 @@ fn split_by_script(text: &str) -> Vec<TextSegment> {
 }
 
 /// Helvetica glyph widths (1/1000 em) from the PDF spec / AFM data.
-fn helvetica_char_width(c: char) -> f32 {
+pub fn helvetica_char_width(c: char) -> f32 {
     match c {
         ' ' => 278.0,
         '!' => 278.0, '"' => 355.0, '#' => 556.0, '$' => 556.0,
@@ -394,5 +394,133 @@ Q
         assert!(ops.contains("/TransLatin"));
         assert!(ops.contains("打造".chars().map(|c| format!("{:04X}", c as u16)).collect::<String>().as_str()));
         assert!(ops.contains("(AI)"));
+    }
+
+    // === Special character handling tests ===
+
+    #[test]
+    fn test_helvetica_digit_widths() {
+        // All digits should have width 556
+        for c in '0'..='9' {
+            assert_eq!(helvetica_char_width(c), 556.0, "Digit '{c}' width");
+        }
+    }
+
+    #[test]
+    fn test_helvetica_narrow_vs_wide_chars() {
+        // I, l, i should be narrow
+        assert!(helvetica_char_width('I') < 300.0);
+        assert!(helvetica_char_width('i') < 250.0);
+        assert!(helvetica_char_width('l') < 250.0);
+        // M, W should be wide
+        assert!(helvetica_char_width('M') > 800.0);
+        assert!(helvetica_char_width('W') > 900.0);
+        // Space
+        assert_eq!(helvetica_char_width(' '), 278.0);
+    }
+
+    #[test]
+    fn test_strip_preserves_marked_content() {
+        // BDC/EMC (marked content) should be preserved even though
+        // they appear near text blocks
+        let input = b"/P <</MCID 0 >>BDC\nBT\n/TT0 12 Tf\n(text) Tj\nET\nEMC\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        assert!(text.contains("BDC"));
+        assert!(text.contains("EMC"));
+        assert!(!text.contains("text"));
+    }
+
+    #[test]
+    fn test_strip_handles_multiple_bt_et_blocks() {
+        let input = b"q\nBT\n(first) Tj\nET\n0.5 g\nBT\n(second) Tj\nET\nQ\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        assert!(!text.contains("first"));
+        assert!(!text.contains("second"));
+        assert!(text.contains("0.5 g"));
+        assert!(text.contains("q"));
+        assert!(text.contains("Q"));
+    }
+
+    #[test]
+    fn test_strip_handles_color_ops_outside_bt() {
+        // Color operations (rg, RG, g, G) outside BT/ET should be preserved
+        let input = b"0.85 0.47 0.34 rg\n0 0 100 100 re\nf\nBT\n0.08 0.08 0.07 rg\n/F1 12 Tf\n(text) Tj\nET\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        // Background color preserved
+        assert!(text.contains("0.85 0.47 0.34 rg"));
+        // Rectangle preserved
+        assert!(text.contains("0 0 100 100 re"));
+        // Text color inside BT/ET stripped
+        assert!(!text.contains("0.08 0.08 0.07 rg"));
+        assert!(!text.contains("text"));
+    }
+
+    #[test]
+    fn test_generate_text_ops_empty_string() {
+        let ops = generate_text_ops("", "Helvetica", 12.0, 72.0, 500.0, None);
+        assert!(ops.contains("() Tj"));
+    }
+
+    #[test]
+    fn test_generate_text_ops_special_pdf_chars() {
+        // Backslash and parentheses must be escaped in PDF literal strings
+        let ops = generate_text_ops("a\\b(c)d", "Helvetica", 12.0, 72.0, 500.0, None);
+        assert!(ops.contains("(a\\\\b\\(c\\)d) Tj"));
+    }
+
+    #[test]
+    fn test_is_cjk_char_ranges() {
+        // CJK Unified Ideographs
+        assert!(is_cjk_char('你'));
+        assert!(is_cjk_char('好'));
+        // Hiragana
+        assert!(is_cjk_char('あ'));
+        // Katakana
+        assert!(is_cjk_char('ア'));
+        // Hangul
+        assert!(is_cjk_char('한'));
+        // Bopomofo
+        assert!(is_cjk_char('ㄅ'));
+        // CJK punctuation
+        assert!(is_cjk_char('。'));
+        assert!(is_cjk_char('，'));
+        // Fullwidth forms
+        assert!(is_cjk_char('Ａ'));
+        // NOT CJK
+        assert!(!is_cjk_char('A'));
+        assert!(!is_cjk_char('1'));
+        assert!(!is_cjk_char(' '));
+        assert!(!is_cjk_char('é'));
+    }
+
+    #[test]
+    fn test_split_by_script_punctuation() {
+        // CJK punctuation should stay with CJK segments
+        let segs = split_by_script("你好，世界！");
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].is_cjk);
+    }
+
+    #[test]
+    fn test_split_by_script_numbers_with_cjk() {
+        // Numbers are Latin, even between CJK chars
+        let segs = split_by_script("第1章");
+        assert_eq!(segs.len(), 3);
+        assert!(segs[0].is_cjk);  // 第
+        assert!(!segs[1].is_cjk); // 1
+        assert!(segs[2].is_cjk);  // 章
+    }
+
+    #[test]
+    fn test_split_by_script_arrows() {
+        // "驗證" is CJK, " → " is Latin, "募資" is CJK
+        let segs = split_by_script("驗證 → 募資");
+        assert_eq!(segs.len(), 3);
+        assert!(segs[0].is_cjk);   // 驗證
+        assert!(!segs[1].is_cjk);  // " → "
+        assert!(segs[2].is_cjk);   // 募資
     }
 }

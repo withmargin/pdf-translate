@@ -202,7 +202,10 @@ pub fn overlay_inplace(
             let clean_text = block.text.replace('\t', "");
             let has_tab = block.text.contains('\t');
             let x = if has_tab && clean_text.trim().chars().all(|c| c.is_ascii_digit()) {
-                let num_width = clean_text.trim().len() as f64 * block.font_size * 0.5;
+                // Right-align using actual Helvetica digit width (556/1000 em)
+                let num_width: f64 = clean_text.trim().chars()
+                    .map(|c| content_stream::helvetica_char_width(c) as f64 / 1000.0 * block.font_size)
+                    .sum();
                 (block.x + block.width - num_width) as f32
             } else {
                 block.x as f32
