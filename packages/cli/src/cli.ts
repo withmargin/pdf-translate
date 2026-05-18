@@ -57,10 +57,10 @@ program
   .option("-l, --lang <language>", "Target language", "zh-TW")
   .option("-s, --source-lang <language>", "Source language (auto-detect if omitted)")
   .option("-o, --output <path>", "Output file path")
-  .option("-p, --provider <name>", "LLM provider: openai, claude, gemini", "openai")
+  .option("-p, --provider <name>", "LLM provider: openai, claude, gemini (env: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY)", "openai")
   .option("-m, --model <model>", "Model name (uses provider default if omitted)")
   .option("--api-key <key>", "API key (or set via environment variable)")
-  .option("--base-url <url>", "Custom OpenAI-compatible API endpoint")
+  .option("--base-url <url>", "Custom OpenAI-compatible API endpoint (for Ollama, vLLM, etc.)")
   .option("--pages <range>", "Page range to translate (e.g. '0-4' for first 5 pages)")
   .option("--json", "Output structured JSON instead of human-readable text")
   .option("--dry-run", "Preview translation plan without calling the LLM")
@@ -68,6 +68,9 @@ program
     const inputPath = resolve(input);
     if (!existsSync(inputPath)) {
       fail("FILE_NOT_FOUND", `File not found: ${inputPath}`);
+    }
+    if (!inputPath.toLowerCase().endsWith(".pdf")) {
+      fail("INVALID_FILE_TYPE", `Expected a PDF file, got: ${inputPath}`);
     }
 
     const outputPath =
@@ -88,10 +91,22 @@ program
         });
 
     // Extract
-    const extraction = extractText(inputPath);
+    let extraction;
+    try {
+      extraction = extractText(inputPath);
+    } catch {
+      fail("INVALID_PDF", `Failed to parse PDF. The file may be corrupted or not a valid PDF: ${inputPath}`);
+    }
+
     let pagesToTranslate = extraction.pages;
     const pageRange = parsePageRange(opts.pages, extraction.total_pages);
     if (pageRange) {
+      if (pageRange.start >= extraction.total_pages) {
+        fail("PAGE_OUT_OF_RANGE", `Page range ${opts.pages} is outside document (${extraction.total_pages} pages, 0-indexed).`, {
+          totalPages: extraction.total_pages,
+          requestedRange: pageRange,
+        });
+      }
       pagesToTranslate = extraction.pages.filter(
         (p) => p.page >= pageRange.start && p.page <= pageRange.end,
       );
@@ -225,9 +240,11 @@ program
             output: { type: "string", description: "Output file path" },
             provider: { type: "string", enum: Object.keys(KNOWN_PROVIDERS), default: "openai" },
             model: { type: "string", description: "Model name" },
-            pages: { type: "string", description: "Page range (e.g. '0-4')" },
+            apiKey: { type: "string", description: "API key (prefer env vars instead)" },
+            baseUrl: { type: "string", description: "Custom OpenAI-compatible endpoint (Ollama, vLLM)" },
+            pages: { type: "string", description: "Page range, 0-indexed (e.g. '0-4' for first 5 pages)" },
             json: { type: "boolean", description: "Structured JSON output" },
-            dryRun: { type: "boolean", description: "Preview plan without API calls" },
+            dryRun: { type: "boolean", description: "Preview plan without API calls (no key needed)" },
           },
         },
         models: { description: "List available models from a provider" },
