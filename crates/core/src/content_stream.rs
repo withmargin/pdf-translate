@@ -822,4 +822,106 @@ Q
         assert!(ops.contains("72.0000 498.0000 150.0000 0.75 re"));
         assert!(ops.contains("f"));
     }
+
+    // === Auto-wrap tests ===
+
+    #[test]
+    fn test_no_wrap_for_short_text() {
+        // Short text that fits in block — should NOT wrap
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        let ops = generate_text_ops("你好", "F", 12.0, 72.0, 500.0, 200.0, 14.0, None, Some(&ctx));
+        // Only one y coordinate (500.0) — no wrapping
+        let y_count = ops.matches("500.0000 Tm").count();
+        assert!(y_count >= 2, "short text should stay on one line, found {y_count} y refs");
+        assert!(!ops.contains("488")); // no second line
+    }
+
+    #[test]
+    fn test_wrap_for_long_multiline_block() {
+        // Long text in a multi-line block (height=50 >> font_size=12)
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0), // 1em per char
+        );
+        // 20 CJK chars at 12pt = 240pt, block width = 100pt → must wrap
+        let text = "你好世界你好世界你好世界你好世界你好世界";
+        let ops = generate_text_ops(text, "F", 12.0, 72.0, 500.0, 100.0, 50.0, None, Some(&ctx));
+        // Should have multiple y positions (wrapped lines)
+        assert!(ops.contains("500.0000 Tm")); // first line
+        let has_second_line = ops.contains("484.") || ops.contains("485.") || ops.contains("486.");
+        assert!(has_second_line, "long text should wrap to second line");
+    }
+
+    #[test]
+    fn test_no_wrap_single_line_block_short_overflow() {
+        // Single-line block (height ≈ font_size) with slight overflow — should NOT wrap
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        // 5 CJK chars at 12pt = 60pt, block width = 50pt, but height=13 (single line)
+        let ops = generate_text_ops("你好世界！", "F", 12.0, 72.0, 500.0, 50.0, 13.0, None, Some(&ctx));
+        // total_width=60 > 50 but NOT > 500 (page limit), so no wrap
+        assert!(!ops.contains("484.")); // no second line
+    }
+
+    #[test]
+    fn test_force_wrap_exceeds_page() {
+        // Single-line block but text exceeds 500pt page limit → force wrap
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        // 50 CJK chars at 12pt = 600pt > 500pt page limit
+        let text: String = std::iter::repeat('字').take(50).collect();
+        let ops = generate_text_ops(&text, "F", 12.0, 72.0, 500.0, 200.0, 13.0, None, Some(&ctx));
+        // Should wrap even though original was single-line
+        let has_second_line = ops.matches("Tm").count() > 1;
+        let unique_ys: std::collections::HashSet<String> = ops.lines()
+            .filter(|l| l.contains("Tm"))
+            .map(|l| l.split_whitespace().nth(4).unwrap_or("").to_string())
+            .collect();
+        assert!(unique_ys.len() > 1, "should wrap to multiple lines, got {} unique y values", unique_ys.len());
+    }
+
+    #[test]
+    fn test_wrap_preserves_color() {
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        let text: String = std::iter::repeat('字').take(50).collect();
+        let color = Some([1.0, 0.0, 0.0]); // red
+        let ops = generate_text_ops(&text, "F", 12.0, 72.0, 500.0, 200.0, 50.0, color, Some(&ctx));
+        assert!(ops.contains("1.0000 0.0000 0.0000 rg"));
+        assert!(!ops.contains("0.0780 0.0780 0.0750 rg")); // no default color
+    }
+
+    #[test]
+    fn test_line_height_compression() {
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        // 30 chars at 12pt = 360pt, width=100 → ~4 lines
+        // 4 lines * 15.6 (1.3*12) = 62.4, but height=40 → must compress
+        let text: String = std::iter::repeat('字').take(30).collect();
+        let ops = generate_text_ops(&text, "F", 12.0, 72.0, 500.0, 100.0, 40.0, None, Some(&ctx));
+        let ys: Vec<f32> = ops.lines()
+            .filter(|l| l.contains("Tm"))
+            .filter_map(|l| l.split_whitespace().nth(4).and_then(|s| s.parse().ok()))
+            .collect();
+        let unique_ys: std::collections::BTreeSet<i32> = ys.iter().map(|y| (*y * 10.0) as i32).collect();
+        // Should have multiple lines with compressed spacing
+        assert!(unique_ys.len() > 1, "should have multiple lines");
+        if unique_ys.len() >= 2 {
+            let ys_vec: Vec<_> = unique_ys.iter().rev().collect();
+            let line_gap = (*ys_vec[0] - *ys_vec[1]) as f32 / 10.0;
+            assert!(line_gap < 15.6, "line height should be compressed below default 15.6, got {line_gap}");
+            assert!(line_gap >= 12.0, "line height should not go below font_size 12, got {line_gap}");
+        }
+    }
 }
