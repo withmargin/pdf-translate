@@ -73,12 +73,38 @@ program
       process.exit(1);
     }
 
-    console.log("Translating...");
+    // Separate blocks into translatable vs pass-through
     const allBlocks = pagesToTranslate.flatMap((p) => p.blocks);
-    const translations = await translatePages(pagesToTranslate, {
+    const shouldTranslate = (text: string) => {
+      const trimmed = text.replace(/\t/g, "").trim();
+      if (!trimmed) return false;
+      if (/^\d+$/.test(trimmed)) return false; // pure page numbers
+      return true;
+    };
+
+    const translatableBlocks = allBlocks.filter((b) => shouldTranslate(b.text));
+    const skipCount = allBlocks.length - translatableBlocks.length;
+    console.log(`Translating ${translatableBlocks.length} blocks (skipping ${skipCount} numbers/empty)...`);
+
+    // Build pages with only translatable blocks for the translation API
+    const translatablePages = pagesToTranslate.map((p) => ({
+      ...p,
+      blocks: p.blocks.filter((b) => shouldTranslate(b.text)),
+    }));
+
+    const translations = await translatePages(translatablePages, {
       provider,
       targetLang: opts.lang,
       sourceLang: opts.sourceLang,
+    });
+
+    // Merge: translatable blocks get translations, others keep original text
+    let tIdx = 0;
+    const mergedTranslations = allBlocks.map((block) => {
+      if (shouldTranslate(block.text)) {
+        return translations[tIdx++] || block.text;
+      }
+      return block.text; // keep original (numbers, tabs, etc.)
     });
 
     console.log("Writing translated PDF...");
@@ -86,7 +112,7 @@ program
       blocks: allBlocks.map((block, i) => ({
         page: block.page,
         original_text: block.text,
-        text: translations[i] || block.text,
+        text: mergedTranslations[i],
         x: block.x,
         y: block.y,
         width: block.width,

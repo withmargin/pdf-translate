@@ -196,6 +196,7 @@ pub fn overlay_inplace(
 
         let mut text_ops = String::new();
         for block in blocks {
+            assert_eq!(block.page, page_idx, "Block page mismatch: block.page={} but processing page_idx={}", block.page, page_idx);
             let use_cjk = needs_cjk && fonts::text_needs_cjk(&block.text);
             let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
 
@@ -208,6 +209,7 @@ pub fn overlay_inplace(
                 if use_cjk { cjk_ctx.as_ref() } else { None },
             ));
         }
+        eprintln!("  Page {page_idx}: {} blocks, {} bytes of text ops", blocks.len(), text_ops.len());
 
         if let Some(ctx) = cjk_ctx {
             all_glyph_mappings.extend(ctx.into_glyph_map());
