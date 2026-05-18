@@ -104,6 +104,7 @@ pub fn overlay_inplace(
     translations: &OverlayInput,
 ) -> Result<()> {
     use lopdf::{dictionary, Document, Object, Stream};
+    use crate::pdf_font;
 
     let needs_cjk = translations
         .blocks
@@ -113,19 +114,51 @@ pub fn overlay_inplace(
     let latin_font_name = "TransLatin";
     let cjk_font_name = "TransCJK";
 
-    // Use pdf_oxide to read content streams (better decompression)
     let source = PdfDocument::open(input_path)?;
     let page_count = source.page_count()?;
 
-    // Use lopdf for raw PDF object manipulation
     let mut doc = Document::load(input_path).context("loading PDF with lopdf")?;
 
+    // Register Latin font (Helvetica)
     let helvetica_id = doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica",
         "Encoding" => "WinAnsiEncoding",
     });
+
+    let cjk_font_obj_id;
+    let cjk_tounicode_id;
+    // Pre-compute glyph ID and width lookup tables from the font
+    let mut gid_table: std::collections::HashMap<char, u16> = std::collections::HashMap::new();
+    let mut width_table: std::collections::HashMap<char, f32> = std::collections::HashMap::new();
+
+    if needs_cjk {
+        eprintln!("CJK text detected, embedding font...");
+        let font_data = fonts::load_cjk_font_data()?;
+        let (fid, tuid) = pdf_font::embed_cjk_font(&mut doc, cjk_font_name, &font_data);
+        cjk_font_obj_id = Some(fid);
+        cjk_tounicode_id = Some(tuid);
+
+        let ef = pdf_oxide::writer::EmbeddedFont::from_data(
+            Some(fonts::CJK_FONT_NAME.to_string()),
+            font_data,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to parse CJK font: {e}"))?;
+
+        // Pre-compute all unique CJK chars across all blocks
+        for block in &translations.blocks {
+            for c in block.text.chars() {
+                if fonts::text_needs_cjk(&c.to_string()) {
+                    gid_table.entry(c).or_insert_with(|| ef.glyph_id(c as u32).unwrap_or(0));
+                    width_table.entry(c).or_insert_with(|| ef.char_width(c as u32) as f32);
+                }
+            }
+        }
+    } else {
+        cjk_font_obj_id = None;
+        cjk_tounicode_id = None;
+    };
 
     // Group blocks by page
     let mut blocks_by_page: Vec<Vec<&TranslatedBlock>> = vec![vec![]; page_count];
@@ -136,6 +169,7 @@ pub fn overlay_inplace(
     }
 
     let page_ids: Vec<_> = doc.page_iter().collect();
+    let mut all_glyph_mappings: Vec<(u16, char)> = Vec::new();
 
     for (page_idx, blocks) in blocks_by_page.iter().enumerate() {
         if blocks.is_empty() {
@@ -144,13 +178,22 @@ pub fn overlay_inplace(
 
         let page_id = page_ids[page_idx];
 
-        // Step 1: Get original content stream via pdf_oxide and strip text
         let original_content = source
             .get_page_content_data(page_idx)
             .context("reading page content stream")?;
         let graphics_only = content_stream::strip_text_operators(&original_content);
 
-        // Step 2: Generate new text operators
+        let cjk_ctx = if needs_cjk {
+            let gt = gid_table.clone();
+            let wt = width_table.clone();
+            Some(content_stream::CjkTextContext::new(
+                Box::new(move |c: char| *gt.get(&c).unwrap_or(&0)),
+                Box::new(move |c: char| *wt.get(&c).unwrap_or(&1000.0)),
+            ))
+        } else {
+            None
+        };
+
         let mut text_ops = String::new();
         for block in blocks {
             let use_cjk = needs_cjk && fonts::text_needs_cjk(&block.text);
@@ -162,8 +205,12 @@ pub fn overlay_inplace(
                 block.font_size as f32,
                 block.x as f32,
                 block.y as f32,
-                use_cjk,
+                if use_cjk { cjk_ctx.as_ref() } else { None },
             ));
+        }
+
+        if let Some(ctx) = cjk_ctx {
+            all_glyph_mappings.extend(ctx.into_glyph_map());
         }
 
         // Step 3: Combine and create new content stream object
@@ -194,13 +241,17 @@ pub fn overlay_inplace(
 
                     if let Some(fonts) = fonts {
                         fonts.set(latin_font_name, Object::Reference(helvetica_id));
+                        if let Some(cjk_id) = cjk_font_obj_id {
+                            fonts.set(cjk_font_name, Object::Reference(cjk_id));
+                        }
                     } else {
-                        resources.set(
-                            "Font",
-                            dictionary! {
-                                latin_font_name => Object::Reference(helvetica_id),
-                            },
-                        );
+                        let mut font_dict = dictionary! {
+                            latin_font_name => Object::Reference(helvetica_id),
+                        };
+                        if let Some(cjk_id) = cjk_font_obj_id {
+                            font_dict.set(cjk_font_name, Object::Reference(cjk_id));
+                        }
+                        resources.set("Font", font_dict);
                     }
                 }
             }
@@ -210,6 +261,11 @@ pub fn overlay_inplace(
             "  Page {page_idx}: replaced content stream ({} blocks)",
             blocks.len()
         );
+    }
+
+    // Update ToUnicode CMap with actual glyph→Unicode mappings for copy/paste
+    if let Some(tuid) = cjk_tounicode_id {
+        pdf_font::update_tounicode(&mut doc, tuid, &all_glyph_mappings);
     }
 
     doc.save(output_path).context("saving PDF")?;

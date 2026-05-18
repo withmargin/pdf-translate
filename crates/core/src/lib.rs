@@ -3,3 +3,4 @@ pub mod extract;
 pub mod fonts;
 pub mod markdown;
 pub mod overlay;
+pub mod pdf_font;

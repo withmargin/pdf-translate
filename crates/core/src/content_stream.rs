@@ -33,41 +33,179 @@ pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
     output
 }
 
+/// Context for CJK text generation with glyph lookup and width calculation.
+pub struct CjkTextContext {
+    pub glyph_lookup: Box<dyn Fn(char) -> u16>,
+    pub cjk_char_width: Box<dyn Fn(char) -> f32>,
+    pub glyph_map: std::cell::RefCell<Vec<(u16, char)>>,
+}
+
+impl CjkTextContext {
+    pub fn new(
+        glyph_lookup: Box<dyn Fn(char) -> u16>,
+        cjk_char_width: Box<dyn Fn(char) -> f32>,
+    ) -> Self {
+        Self {
+            glyph_lookup,
+            cjk_char_width,
+            glyph_map: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn into_glyph_map(self) -> Vec<(u16, char)> {
+        self.glyph_map.into_inner()
+    }
+}
+
 /// Generate PDF text operators for a translated text block.
-///
-/// For standard fonts (Helvetica, etc.), text is encoded as literal strings.
-/// For CJK fonts, text is encoded as hex glyph IDs.
+/// When `cjk_ctx` is provided, splits text into CJK and Latin
+/// segments, rendering each with the appropriate font.
 pub fn generate_text_ops(
     text: &str,
     font_name: &str,
     font_size: f32,
     x: f32,
     y: f32,
-    is_cjk_font: bool,
+    cjk_ctx: Option<&CjkTextContext>,
 ) -> String {
+    if cjk_ctx.is_none() {
+        return generate_latin_text_ops(text, font_name, font_size, x, y);
+    }
+
+    let ctx = cjk_ctx.unwrap();
+    let latin_font = "TransLatin";
+    let segments = split_by_script(text);
+
+    let mut ops = String::new();
+    let mut cursor_x = x;
+
+    for seg in &segments {
+        ops.push_str("BT\n");
+        ops.push_str("0.078 0.078 0.075 rg\n");
+
+        if seg.is_cjk {
+            ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
+            ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+            let mut hex = String::new();
+            for c in seg.text.chars() {
+                let gid = (ctx.glyph_lookup)(c);
+                hex.push_str(&format!("{:04X}", gid));
+                ctx.glyph_map.borrow_mut().push((gid, c));
+                cursor_x += (ctx.cjk_char_width)(c) / 1000.0 * font_size;
+            }
+            ops.push_str(&format!("<{hex}> Tj\n"));
+        } else {
+            ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
+            ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+            let escaped = seg.text
+                .replace('\\', "\\\\")
+                .replace('(', "\\(")
+                .replace(')', "\\)");
+            ops.push_str(&format!("({escaped}) Tj\n"));
+            for c in seg.text.chars() {
+                cursor_x += helvetica_char_width(c) / 1000.0 * font_size;
+            }
+        }
+
+        ops.push_str("ET\n");
+    }
+
+    ops
+}
+
+fn generate_latin_text_ops(text: &str, font_name: &str, font_size: f32, x: f32, y: f32) -> String {
     let mut ops = String::new();
     ops.push_str("BT\n");
-    // Set text color to near-black (matching original PDF text color)
     ops.push_str("0.078 0.078 0.075 rg\n");
     ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
     ops.push_str(&format!("1 0 0 1 {x:.4} {y:.4} Tm\n"));
 
-    if is_cjk_font {
-        // CJK: encode each character as 4-hex-digit Unicode codepoint
-        // (for Type 0/CIDFont with Identity-H CMap)
-        let hex: String = text.chars().map(|c| format!("{:04X}", c as u32)).collect();
-        ops.push_str(&format!("<{hex}> Tj\n"));
-    } else {
-        // Latin: use literal string, escaping special chars
-        let escaped = text
-            .replace('\\', "\\\\")
-            .replace('(', "\\(")
-            .replace(')', "\\)");
-        ops.push_str(&format!("({escaped}) Tj\n"));
-    }
-
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)");
+    ops.push_str(&format!("({escaped}) Tj\n"));
     ops.push_str("ET\n");
     ops
+}
+
+struct TextSegment {
+    text: String,
+    is_cjk: bool,
+}
+
+fn split_by_script(text: &str) -> Vec<TextSegment> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut current_is_cjk = false;
+
+    for c in text.chars() {
+        let is_cjk = is_cjk_char(c);
+
+        if !current.is_empty() && is_cjk != current_is_cjk {
+            segments.push(TextSegment {
+                text: current.clone(),
+                is_cjk: current_is_cjk,
+            });
+            current.clear();
+        }
+
+        current_is_cjk = is_cjk;
+        current.push(c);
+    }
+
+    if !current.is_empty() {
+        segments.push(TextSegment {
+            text: current,
+            is_cjk: current_is_cjk,
+        });
+    }
+
+    segments
+}
+
+/// Helvetica glyph widths (1/1000 em) from the PDF spec / AFM data.
+fn helvetica_char_width(c: char) -> f32 {
+    match c {
+        ' ' => 278.0,
+        '!' => 278.0, '"' => 355.0, '#' => 556.0, '$' => 556.0,
+        '%' => 889.0, '&' => 667.0, '\'' => 191.0, '(' => 333.0,
+        ')' => 333.0, '*' => 389.0, '+' => 584.0, ',' => 278.0,
+        '-' => 333.0, '.' => 278.0, '/' => 278.0,
+        '0'..='9' => 556.0,
+        ':' => 278.0, ';' => 278.0, '<' => 584.0, '=' => 584.0,
+        '>' => 584.0, '?' => 556.0, '@' => 1015.0,
+        'A' => 667.0, 'B' => 667.0, 'C' => 722.0, 'D' => 722.0,
+        'E' => 667.0, 'F' => 611.0, 'G' => 778.0, 'H' => 722.0,
+        'I' => 278.0, 'J' => 500.0, 'K' => 667.0, 'L' => 556.0,
+        'M' => 833.0, 'N' => 722.0, 'O' => 778.0, 'P' => 667.0,
+        'Q' => 778.0, 'R' => 722.0, 'S' => 667.0, 'T' => 611.0,
+        'U' => 722.0, 'V' => 667.0, 'W' => 944.0, 'X' => 667.0,
+        'Y' => 667.0, 'Z' => 611.0,
+        '[' => 278.0, '\\' => 278.0, ']' => 278.0, '^' => 469.0,
+        '_' => 556.0, '`' => 333.0,
+        'a' => 556.0, 'b' => 556.0, 'c' => 500.0, 'd' => 556.0,
+        'e' => 556.0, 'f' => 278.0, 'g' => 556.0, 'h' => 556.0,
+        'i' => 222.0, 'j' => 222.0, 'k' => 500.0, 'l' => 222.0,
+        'm' => 833.0, 'n' => 556.0, 'o' => 556.0, 'p' => 556.0,
+        'q' => 556.0, 'r' => 333.0, 's' => 500.0, 't' => 278.0,
+        'u' => 556.0, 'v' => 500.0, 'w' => 722.0, 'x' => 500.0,
+        'y' => 500.0, 'z' => 500.0,
+        '{' => 334.0, '|' => 260.0, '}' => 334.0, '~' => 584.0,
+        _ => 556.0,
+    }
+}
+
+fn is_cjk_char(c: char) -> bool {
+    let cp = c as u32;
+    (0x4E00..=0x9FFF).contains(&cp)
+        || (0x3400..=0x4DBF).contains(&cp)
+        || (0xF900..=0xFAFF).contains(&cp)
+        || (0x3040..=0x30FF).contains(&cp)
+        || (0xAC00..=0xD7AF).contains(&cp)
+        || (0x3100..=0x312F).contains(&cp)
+        || (0x3000..=0x303F).contains(&cp)
+        || (0xFF00..=0xFFEF).contains(&cp)
 }
 
 /// Combine stripped graphics with new translated text into a complete content stream.
@@ -120,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_generate_text_ops_latin() {
-        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, false);
+        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, None);
         assert!(ops.contains("BT"));
         assert!(ops.contains("/Helvetica 12.0000 Tf"));
         assert!(ops.contains("1 0 0 1 72.0000 500.0000 Tm"));
@@ -129,18 +267,32 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_text_ops_cjk() {
-        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, true);
-        assert!(ops.contains("BT"));
+    fn test_generate_text_ops_with_cjk_context() {
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| (c as u16) + 100),
+            Box::new(|_c: char| 1000.0),
+        );
+        let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
+        assert!(ops.contains("/CJKFont 12.0000 Tf"));
+        assert!(ops.contains("<4FC459E1> Tj"));
+        let map = ctx.into_glyph_map();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn test_generate_text_ops_cjk_identity() {
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, Some(&ctx));
         assert!(ops.contains("/NotoSansCJKtc 12.0000 Tf"));
-        // 你 = U+4F60, 好 = U+597D
         assert!(ops.contains("<4F60597D> Tj"));
-        assert!(ops.contains("ET"));
     }
 
     #[test]
     fn test_generate_text_ops_escapes_parens() {
-        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, false);
+        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, None);
         assert!(ops.contains("(Hello \\(World\\)) Tj"));
     }
 
@@ -189,5 +341,58 @@ Q
         // Text stripped
         assert!(!text.contains("Playbook"));
         assert!(!text.contains("56 0 0 56"));
+    }
+
+    #[test]
+    fn test_split_by_script_pure_cjk() {
+        let segs = split_by_script("你好世界");
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].is_cjk);
+        assert_eq!(segs[0].text, "你好世界");
+    }
+
+    #[test]
+    fn test_split_by_script_pure_latin() {
+        let segs = split_by_script("Hello World");
+        assert_eq!(segs.len(), 1);
+        assert!(!segs[0].is_cjk);
+    }
+
+    #[test]
+    fn test_split_by_script_mixed() {
+        let segs = split_by_script("打造AI原生");
+        assert_eq!(segs.len(), 3);
+        assert!(segs[0].is_cjk);
+        assert_eq!(segs[0].text, "打造");
+        assert!(!segs[1].is_cjk);
+        assert_eq!(segs[1].text, "AI");
+        assert!(segs[2].is_cjk);
+        assert_eq!(segs[2].text, "原生");
+    }
+
+    #[test]
+    fn test_split_by_script_mixed_with_spaces() {
+        let segs = split_by_script("打造 AI 原生");
+        // "打造" (CJK), " AI " (Latin+spaces), "原生" (CJK)
+        assert_eq!(segs.len(), 3);
+        assert!(segs[0].is_cjk);
+        assert_eq!(segs[0].text, "打造");
+        assert!(!segs[1].is_cjk);
+        assert_eq!(segs[1].text, " AI ");
+        assert!(segs[2].is_cjk);
+        assert_eq!(segs[2].text, "原生");
+    }
+
+    #[test]
+    fn test_mixed_text_uses_both_fonts() {
+        let ctx = CjkTextContext::new(
+            Box::new(|c: char| c as u16),
+            Box::new(|_c: char| 1000.0),
+        );
+        let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
+        assert!(ops.contains("/CJKFont"));
+        assert!(ops.contains("/TransLatin"));
+        assert!(ops.contains("打造".chars().map(|c| format!("{:04X}", c as u16)).collect::<String>().as_str()));
+        assert!(ops.contains("(AI)"));
     }
 }
