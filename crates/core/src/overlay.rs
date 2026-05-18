@@ -181,7 +181,9 @@ pub fn overlay_inplace(
         let original_content = source
             .get_page_content_data(page_idx)
             .context("reading page content stream")?;
-        let graphics_only = content_stream::strip_text_operators(&original_content);
+        let stripped = content_stream::strip_text_operators(&original_content);
+        let graphics_only = stripped.graphics;
+        let underline_ys = stripped.underline_ys;
 
         let cjk_ctx = if needs_cjk {
             let gt = gid_table.clone();
@@ -193,6 +195,10 @@ pub fn overlay_inplace(
         } else {
             None
         };
+
+        // Read annotation rects for underline reconstruction
+        let annot_rects = read_annot_rects(&doc, page_id);
+        let has_link_annots = !annot_rects.is_empty();
 
         let mut text_ops = String::new();
         for block in blocks {
@@ -222,6 +228,28 @@ pub fn overlay_inplace(
                 block.y as f32,
                 if use_cjk { cjk_ctx.as_ref() } else { None },
             ));
+
+            // Regenerate underline if this block overlaps with a link annotation
+            if has_link_annots {
+                let cjk_w: Option<&dyn Fn(char) -> f32> = if use_cjk {
+                    let wt_ref = &width_table;
+                    Some(&|c: char| *wt_ref.get(&c).unwrap_or(&1000.0))
+                } else {
+                    None
+                };
+                let text_width = content_stream::calculate_text_width(
+                    &clean_text,
+                    block.font_size as f32,
+                    cjk_w,
+                );
+                if text_width > 5.0 && block_is_linked(block, &annot_rects) {
+                    text_ops.push_str(&content_stream::generate_underline_ops(
+                        x,
+                        block.y as f32,
+                        text_width,
+                    ));
+                }
+            }
         }
         eprintln!("  Page {page_idx}: {} blocks, {} bytes of text ops", blocks.len(), text_ops.len());
 
@@ -305,6 +333,50 @@ pub fn overlay_inplace(
     doc.save(output_path).context("saving PDF")?;
 
     Ok(())
+}
+
+/// Read link annotation Rects from a page [x0, y0, x1, y1]
+fn read_annot_rects(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Vec<[f64; 4]> {
+    use lopdf::Object;
+    let mut rects = Vec::new();
+    let page_dict = match doc.get_object(page_id) {
+        Ok(Object::Dictionary(d)) => d,
+        _ => return rects,
+    };
+    let annots = match page_dict.get(b"Annots") {
+        Ok(Object::Array(arr)) => arr.clone(),
+        _ => return rects,
+    };
+    for annot_ref in &annots {
+        let annot_id = match annot_ref {
+            Object::Reference(r) => *r,
+            _ => continue,
+        };
+        if let Ok(Object::Dictionary(annot_dict)) = doc.get_object(annot_id) {
+            if let Ok(Object::Array(rect)) = annot_dict.get(b"Rect") {
+                if rect.len() == 4 {
+                    let vals: Vec<f64> = rect.iter().map(|v| match v {
+                        Object::Real(f) => *f as f64,
+                        Object::Integer(i) => *i as f64,
+                        _ => 0.0,
+                    }).collect();
+                    rects.push([vals[0], vals[1], vals[2], vals[3]]);
+                }
+            }
+        }
+    }
+    rects
+}
+
+/// Check if a text block overlaps with any link annotation rect
+fn block_is_linked(block: &TranslatedBlock, annot_rects: &[[f64; 4]]) -> bool {
+    let bx = block.x;
+    let by = block.y;
+    // PDF annotation Rect is [x0, y0, x1, y1] (bottom-left to top-right)
+    annot_rects.iter().any(|r| {
+        bx >= r[0] - 5.0 && bx <= r[2] + 5.0 &&
+        by >= r[1] - 5.0 && by <= r[3] + 5.0
+    })
 }
 
 #[cfg(test)]

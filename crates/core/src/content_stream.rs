@@ -4,11 +4,19 @@
 /// PDF text operators start with T (Tf, Tm, Tj, TJ, Td, T*, Tc, Tw, etc.)
 /// plus BT/ET delimiters and the quote operators (' and ").
 /// We also strip inline image operators (BI/ID/EI) as PDFMathTranslate does.
-pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
+/// Result of stripping text from a content stream.
+pub struct StrippedContent {
+    pub graphics: Vec<u8>,
+    /// Y positions (in content stream coords) where underlines were stripped.
+    pub underline_ys: Vec<f32>,
+}
+
+pub fn strip_text_operators(content: &[u8]) -> StrippedContent {
     let input = String::from_utf8_lossy(content);
     let mut output = Vec::new();
+    let mut underline_ys = Vec::new();
     let mut in_bt_block = false;
-    let mut pending_rect: Option<String> = None;
+    let mut pending_rect: Option<(String, f32)> = None; // (line, y_position)
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -26,24 +34,21 @@ pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
             continue;
         }
 
-        // Detect thin rectangles (h ≤ 1.5) that are link underlines.
-        // Buffer "re" lines and check if the next line is "f" (fill).
-        // Full-width rules (w > 500) are kept as section dividers.
         if trimmed.ends_with(" re") {
             if is_underline_rect(trimmed) {
-                pending_rect = Some(line.to_string());
+                let y = parse_rect_y(trimmed);
+                pending_rect = Some((line.to_string(), y));
                 continue;
             }
         }
 
-        if let Some(ref _rect) = pending_rect {
+        if let Some((ref rect_line, rect_y)) = pending_rect {
             if trimmed == "f" || trimmed == "f*" {
-                // Skip both the rect and the fill — it's an underline
+                underline_ys.push(rect_y);
                 pending_rect = None;
                 continue;
             } else {
-                // Not a fill after the rect — flush the rect
-                output.extend_from_slice(_rect.as_bytes());
+                output.extend_from_slice(rect_line.as_bytes());
                 output.push(b'\n');
                 pending_rect = None;
             }
@@ -53,7 +58,22 @@ pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
         output.push(b'\n');
     }
 
-    output
+    underline_ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    underline_ys.dedup_by(|a, b| (*a - *b).abs() < 2.0);
+
+    StrippedContent {
+        graphics: output,
+        underline_ys,
+    }
+}
+
+fn parse_rect_y(line: &str) -> f32 {
+    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+    if parts.len() >= 2 {
+        parts[1].parse().unwrap_or(0.0)
+    } else {
+        0.0
+    }
 }
 
 fn is_underline_rect(line: &str) -> bool {
@@ -163,11 +183,40 @@ fn generate_latin_text_ops(text: &str, font_name: &str, font_size: f32, x: f32, 
     ops
 }
 
+/// Calculate the rendered width of text in points, handling mixed CJK/Latin.
+/// For CJK chars, uses the provided width lookup. For Latin, uses Helvetica metrics.
+pub fn calculate_text_width(
+    text: &str,
+    font_size: f32,
+    cjk_width_lookup: Option<&dyn Fn(char) -> f32>,
+) -> f32 {
+    let segments = split_by_script(text);
+    let mut total = 0.0;
+
+    for seg in &segments {
+        if seg.is_cjk {
+            if let Some(lookup) = cjk_width_lookup {
+                for c in seg.text.chars() {
+                    total += lookup(c) / 1000.0 * font_size;
+                }
+            } else {
+                total += seg.text.chars().count() as f32 * font_size;
+            }
+        } else {
+            for c in seg.text.chars() {
+                total += helvetica_char_width(c) / 1000.0 * font_size;
+            }
+        }
+    }
+
+    total
+}
+
 /// Generate a thin underline rectangle matching the text width.
-/// Uses the same color as text (0.078 0.078 0.075) and draws 2pt below baseline.
+/// Draws at 2pt below the y baseline with height 0.75pt.
 pub fn generate_underline_ops(x: f32, y: f32, width: f32) -> String {
     let underline_y = y - 2.0;
-    format!("0.078 0.078 0.075 rg\n{x:.4} {underline_y:.4} {width:.4} 1 re\nf\n")
+    format!("0.078 0.078 0.075 rg\n{x:.4} {underline_y:.4} {width:.4} 0.75 re\nf\n")
 }
 
 struct TextSegment {
@@ -274,8 +323,8 @@ mod tests {
     #[test]
     fn test_strip_text_simple() {
         let input = b"q\n0.5 0.5 0.5 rg\n100 200 300 400 re\nf\nQ\nBT\n/TT0 12 Tf\n(Hello) Tj\nET\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
 
         assert!(text.contains("100 200 300 400 re"));
         assert!(text.contains("0.5 0.5 0.5 rg"));
@@ -288,8 +337,8 @@ mod tests {
     #[test]
     fn test_strip_preserves_graphics() {
         let input = b"q\n0.851 0.467 0.341 rg\n0 0 792 612 re\nf\nQ\nBT\n/TT0 1 Tf\n56 0 0 56 54 502 Tm\n[(Hello)] TJ\nET\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
 
         assert!(text.contains("0.851 0.467 0.341 rg"));
         assert!(text.contains("0 0 792 612 re"));
@@ -370,8 +419,8 @@ W n
 S
 Q
 "#;
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
 
         // Marked content tags preserved
         assert!(text.contains("BDC"));
@@ -465,8 +514,8 @@ Q
         // BDC/EMC (marked content) should be preserved even though
         // they appear near text blocks
         let input = b"/P <</MCID 0 >>BDC\nBT\n/TT0 12 Tf\n(text) Tj\nET\nEMC\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         assert!(text.contains("BDC"));
         assert!(text.contains("EMC"));
         assert!(!text.contains("text"));
@@ -475,8 +524,8 @@ Q
     #[test]
     fn test_strip_handles_multiple_bt_et_blocks() {
         let input = b"q\nBT\n(first) Tj\nET\n0.5 g\nBT\n(second) Tj\nET\nQ\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         assert!(!text.contains("first"));
         assert!(!text.contains("second"));
         assert!(text.contains("0.5 g"));
@@ -488,8 +537,8 @@ Q
     fn test_strip_handles_color_ops_outside_bt() {
         // Color operations (rg, RG, g, G) outside BT/ET should be preserved
         let input = b"0.85 0.47 0.34 rg\n0 0 100 100 re\nf\nBT\n0.08 0.08 0.07 rg\n/F1 12 Tf\n(text) Tj\nET\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         // Background color preserved
         assert!(text.contains("0.85 0.47 0.34 rg"));
         // Rectangle preserved
@@ -598,8 +647,8 @@ Q
     #[test]
     fn test_strip_removes_underline_rects() {
         let input = b"q\n0.5 g\n60 1043 87 1 re\nf\n100 200 300 400 re\nf\nQ\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         // Underline rect (87x1) stripped
         assert!(!text.contains("60 1043 87 1 re"));
         // Normal rect (300x400) preserved
@@ -609,8 +658,8 @@ Q
     #[test]
     fn test_strip_preserves_section_rules() {
         let input = b"q\n60 969 622 1 re\nf\nQ\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         // Full-width rule preserved
         assert!(text.contains("60 969 622 1 re"));
         assert!(text.contains("f"));
@@ -620,9 +669,60 @@ Q
     fn test_strip_underline_followed_by_non_fill() {
         // If a thin rect is NOT followed by "f", it should be preserved
         let input = b"60 1043 87 1 re\nS\n";
-        let result = strip_text_operators(input);
-        let text = String::from_utf8_lossy(&result);
+        let stripped = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&stripped.graphics);
         assert!(text.contains("60 1043 87 1 re"));
         assert!(text.contains("S"));
+    }
+
+    #[test]
+    fn test_strip_tracks_underline_y_positions() {
+        let input = b"60 1043 87 1 re\nf\n60 1079 88 1 re\nf\n60 969 622 1 re\nf\n";
+        let stripped = strip_text_operators(input);
+        // Two underlines stripped (y=1043, y=1079), section rule (y=969) preserved
+        assert_eq!(stripped.underline_ys.len(), 2);
+        assert!((stripped.underline_ys[0] - 1043.0).abs() < 0.1);
+        assert!((stripped.underline_ys[1] - 1079.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_strip_deduplicates_nearby_underline_ys() {
+        // Two underlines at nearly same y (same line, different x segments)
+        let input = b"60 1043 87 1 re\nf\n147 1043 169 1 re\nf\n";
+        let stripped = strip_text_operators(input);
+        assert_eq!(stripped.underline_ys.len(), 1, "nearby ys should be deduped");
+    }
+
+    // === Text width calculation tests ===
+
+    #[test]
+    fn test_calculate_text_width_latin() {
+        // "AI" at 12pt: A=667, I=278 → (667+278)/1000 * 12 = 11.34
+        let w = calculate_text_width("AI", 12.0, None);
+        assert!((w - 11.34).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_calculate_text_width_cjk() {
+        // Each CJK char at 1000 width units, 12pt → 12pt per char
+        let lookup = |_c: char| 1000.0_f32;
+        let w = calculate_text_width("你好", 12.0, Some(&lookup));
+        assert!((w - 24.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_calculate_text_width_mixed() {
+        // "打造AI" at 12pt: 打(1000)+造(1000) as CJK, A(667)+I(278) as Latin
+        let lookup = |_c: char| 1000.0_f32;
+        let w = calculate_text_width("打造AI", 12.0, Some(&lookup));
+        let expected = (1000.0 + 1000.0 + 667.0 + 278.0) / 1000.0 * 12.0;
+        assert!((w - expected).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_generate_underline_ops() {
+        let ops = generate_underline_ops(72.0, 500.0, 150.0);
+        assert!(ops.contains("72.0000 498.0000 150.0000 0.75 re"));
+        assert!(ops.contains("f"));
     }
 }
