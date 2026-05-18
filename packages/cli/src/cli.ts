@@ -13,7 +13,7 @@ import {
 import { translatePages } from "./translate.js";
 import type { TextBlock } from "./bridge.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 function jsonOut(data: unknown) {
   console.log(JSON.stringify(data, null, 2));
