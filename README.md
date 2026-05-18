@@ -2,6 +2,8 @@
 
 Translate PDF documents using LLMs. Supports OpenAI, Claude, Gemini, and any OpenAI-compatible API.
 
+Preserves original PDF layout — backgrounds, images, shapes, and logos stay intact. Only text is replaced with translations.
+
 ## Install
 
 ```bash
@@ -29,8 +31,14 @@ pdf-translate input.pdf -l ko --provider gemini --model gemini-2.5-flash
 # Use a local model (Ollama, vLLM, etc.)
 pdf-translate input.pdf -l zh-TW --base-url http://localhost:11434/v1 --model qwen3
 
+# Translate specific pages
+pdf-translate input.pdf -l zh-TW --pages 0-4
+
 # Specify output path
 pdf-translate input.pdf -l de --output translated.pdf
+
+# List available models from a provider
+pdf-translate models --provider claude
 ```
 
 ## Providers
@@ -42,23 +50,34 @@ pdf-translate input.pdf -l de --output translated.pdf
 | Gemini | `--provider gemini` | `GEMINI_API_KEY` |
 | Custom | `--base-url <url>` | `OPENAI_API_KEY` (optional) |
 
-## Architecture
+## How it works
+
+1. **Extract** — pdf_oxide reads text spans with coordinates, fonts, and colors
+2. **Translate** — LLM translates each page independently (page-by-page to prevent context bleeding)
+3. **Replace** — Content stream manipulation: strip original text operators, inject translated text with CJK font embedding
+4. **Output** — Modified PDF with original layout preserved
 
 ```
 ┌──────────────────────────────────────────────┐
 │  Node.js CLI (TypeScript)                    │
 │  - Command-line interface                    │
 │  - LLM API calls (openai SDK)               │
-│  - Translation chunking & prompt strategy    │
+│  - Per-page translation with batching        │
 ├──────────────────────────────────────────────┤
-│  Rust Core (pdf_oxide)                       │
+│  Rust Core (pdf_oxide + lopdf)               │
 │  - PDF text extraction with coordinates      │
-│  - PDF overlay (translated text)             │
-│  - CJK font embedding                       │
+│  - Content stream manipulation               │
+│  - CJK font embedding (Noto Sans CJK TC)    │
+│  - Mixed CJK/Latin font rendering            │
 └──────────────────────────────────────────────┘
 ```
 
-Platform-specific Rust binaries are distributed via npm optional dependencies, following the same pattern as [rolldown](https://github.com/nicolo-ribaudo/rolldown), [esbuild](https://github.com/nicolo-ribaudo/esbuild), and [SWC](https://github.com/nicolo-ribaudo/swc). Only the binary for your current platform is downloaded.
+## Known limitations (v0.1.0)
+
+- **Multi-span lines**: Text split across multiple PDF spans on the same line may show gaps after translation. Paragraph grouping is planned for v0.2.0.
+- **No text reflow**: Translated text longer than the original may overflow its bounding box.
+- **CJK font size**: The embedded Noto Sans CJK TC font adds ~16MB to the output file. Font subsetting is planned.
+- **First CJK run**: Downloads the CJK font (~16MB) on first use. Cached after that.
 
 ## Development
 
@@ -82,6 +101,9 @@ pnpm --filter pdf-translate build
 
 # Run in development
 pnpm --filter pdf-translate dev -- input.pdf -l zh-TW
+
+# Run tests
+cargo test --manifest-path crates/core/Cargo.toml --lib
 ```
 
 ## License
