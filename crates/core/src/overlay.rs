@@ -228,6 +228,8 @@ pub fn overlay_inplace(
                 block.font_size as f32,
                 x,
                 block.y as f32,
+                block.width as f32,
+                block.height as f32,
                 block.color,
                 if use_cjk { cjk_ctx.as_ref() } else { None },
             ));

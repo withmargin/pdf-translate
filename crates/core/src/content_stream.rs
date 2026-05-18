@@ -120,6 +120,8 @@ pub fn generate_text_ops(
     font_size: f32,
     x: f32,
     y: f32,
+    max_width: f32,
+    max_height: f32,
     color: Option<[f32; 3]>,
     cjk_ctx: Option<&CjkTextContext>,
 ) -> String {
@@ -134,28 +136,54 @@ pub fn generate_text_ops(
     let latin_font = "TransLatin";
     let segments = split_by_script(text);
 
+    let right_edge = x + max_width;
     let mut ops = String::new();
     let mut cursor_x = x;
+    let mut cursor_y = y;
+    let mut line_height = font_size * 1.3;
+
+    // Only wrap if original block was multi-line AND translated text exceeds width
+    let total_width = calculate_text_width(text, font_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
+    let original_was_multiline = max_height > font_size * 1.5;
+    let needs_wrap = max_width > 0.0 && total_width > max_width * 1.05 && original_was_multiline;
+
+    // If wrapping and would overflow height, compress line height
+    if needs_wrap && max_height > font_size * 1.5 {
+        let estimated_lines = (total_width / max_width).ceil();
+        let needed_height = estimated_lines * line_height;
+        if needed_height > max_height {
+            line_height = (max_height / estimated_lines).max(font_size);
+        }
+    }
 
     for seg in &segments {
         let has_non_ascii = seg.text.chars().any(|c| c as u32 > 127);
 
         if seg.is_cjk || has_non_ascii {
-            // Render char-by-char: CJK font for chars with glyphs, Helvetica for fallback
             for c in seg.text.chars() {
+                let char_w = if (ctx.glyph_lookup)(c) != 0 {
+                    (ctx.cjk_char_width)(c) / 1000.0 * font_size
+                } else {
+                    helvetica_char_width(c) / 1000.0 * font_size
+                };
+
+                // Wrap if exceeding right edge
+                if needs_wrap && cursor_x + char_w > right_edge + 0.1 * font_size {
+                    cursor_x = x;
+                    cursor_y -= line_height;
+                }
+
                 let gid = (ctx.glyph_lookup)(c);
                 ops.push_str("BT\n");
                 ops.push_str(&color_op);
                 if gid != 0 {
                     ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
-                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {cursor_y:.4} Tm\n"));
                     ops.push_str(&format!("<{:04X}> Tj\n", gid));
                     ctx.glyph_map.borrow_mut().push((gid, c));
-                    cursor_x += (ctx.cjk_char_width)(c) / 1000.0 * font_size;
                 } else {
-                    // Fallback to Helvetica with WinAnsiEncoding hex for non-ASCII
                     ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
-                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+                    ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {cursor_y:.4} Tm\n"));
                     if let Some(byte) = unicode_to_winansi(c) {
                         ops.push_str(&format!("<{:02X}> Tj\n", byte));
                     } else if c.is_ascii() {
@@ -167,20 +195,27 @@ pub fn generate_text_ops(
                         };
                         ops.push_str(&format!("({escaped}) Tj\n"));
                     } else {
-                        // Last resort: skip unrenderable char
                         ops.push_str("( ) Tj\n");
                     }
-                    cursor_x += helvetica_char_width(c) / 1000.0 * font_size;
                 }
+                cursor_x += char_w;
                 ops.push_str("ET\n");
             }
             continue;
         } else {
-            // Pure ASCII Latin — use Helvetica with literal string
+            // Pure ASCII Latin — check if word fits, wrap if not
+            if needs_wrap {
+                let seg_width: f32 = seg.text.chars().map(|c| helvetica_char_width(c) / 1000.0 * font_size).sum();
+                if cursor_x + seg_width > right_edge + 0.1 * font_size && cursor_x > x + 0.1 {
+                    cursor_x = x;
+                    cursor_y -= line_height;
+                }
+            }
+
             ops.push_str("BT\n");
             ops.push_str(&color_op);
             ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
-            ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
+            ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {cursor_y:.4} Tm\n"));
             let escaped = seg.text
                 .replace('\\', "\\\\")
                 .replace('(', "\\(")
@@ -402,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_generate_text_ops_latin() {
-        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, None, None);
+        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, 0.0, 0.0, None, None);
         assert!(ops.contains("BT"));
         assert!(ops.contains("/Helvetica 12.0000 Tf"));
         assert!(ops.contains("1 0 0 1 72.0000 500.0000 Tm"));
@@ -416,7 +451,7 @@ mod tests {
             Box::new(|c: char| (c as u16) + 100),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, None, Some(&ctx));
+        let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, 0.0, 0.0, None, Some(&ctx));
         assert!(ops.contains("/CJKFont 12.0000 Tf"));
         // Per-char rendering: each char gets its own BT/ET
         assert!(ops.contains("<4FC4> Tj"));
@@ -431,7 +466,7 @@ mod tests {
             Box::new(|c: char| c as u16),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, None, Some(&ctx));
+        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, 0.0, 0.0, None, Some(&ctx));
         assert!(ops.contains("/NotoSansCJKtc 12.0000 Tf"));
         assert!(ops.contains("<4F60> Tj"));
         assert!(ops.contains("<597D> Tj"));
@@ -439,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_generate_text_ops_escapes_parens() {
-        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, None, None);
+        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, 0.0, 0.0, None, None);
         assert!(ops.contains("(Hello \\(World\\)) Tj"));
     }
 
@@ -536,7 +571,7 @@ Q
             Box::new(|c: char| c as u16),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, None, Some(&ctx));
+        let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, 0.0, 0.0, None, Some(&ctx));
         // CJK chars use CJK font
         assert!(ops.contains("/CJKFont"));
         assert!(ops.contains(&format!("<{:04X}> Tj", '打' as u16)));
@@ -609,14 +644,14 @@ Q
 
     #[test]
     fn test_generate_text_ops_empty_string() {
-        let ops = generate_text_ops("", "Helvetica", 12.0, 72.0, 500.0, None, None);
+        let ops = generate_text_ops("", "Helvetica", 12.0, 72.0, 500.0, 0.0, 0.0, None, None);
         assert!(ops.contains("() Tj"));
     }
 
     #[test]
     fn test_generate_text_ops_special_pdf_chars() {
         // Backslash and parentheses must be escaped in PDF literal strings
-        let ops = generate_text_ops("a\\b(c)d", "Helvetica", 12.0, 72.0, 500.0, None, None);
+        let ops = generate_text_ops("a\\b(c)d", "Helvetica", 12.0, 72.0, 500.0, 0.0, 0.0, None, None);
         assert!(ops.contains("(a\\\\b\\(c\\)d) Tj"));
     }
 
