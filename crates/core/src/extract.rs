@@ -97,12 +97,12 @@ fn merge_same_line_blocks(mut blocks: Vec<TextBlock>) -> Vec<TextBlock> {
             let same_line = (prev.y - block.y).abs() < y_threshold;
             let same_size = (prev.font_size - block.font_size).abs() < 0.5;
             let same_page = prev.page == block.page;
-            // Only merge if the next block starts near where the previous one ends
-            // Large gaps (> 2x font size) indicate separate elements (e.g. title vs page number)
             let prev_right = prev.x + prev.width;
             let x_gap = block.x - prev_right;
             let close_enough = x_gap < prev.font_size * 2.0;
-            same_line && same_size && same_page && close_enough
+            // Never merge tab-prefixed blocks (tab leaders for right-aligned content)
+            let next_is_tab = block.text.starts_with('\t');
+            same_line && same_size && same_page && close_enough && !next_is_tab
         });
 
         if should_merge {
