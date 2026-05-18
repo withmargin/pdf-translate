@@ -1,0 +1,38 @@
+{
+  "name": "pdf-translate",
+  "version": "0.1.0",
+  "description": "Translate PDF documents using LLMs. Supports OpenAI, Claude, Gemini, and any OpenAI-compatible API.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withmargin/pdf-translate"
+  },
+  "bin": {
+    "pdf-translate": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rolldown -c",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "openai": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@margin/pdf-translate-darwin-arm64": "0.1.0",
+    "@margin/pdf-translate-darwin-x64": "0.1.0",
+    "@margin/pdf-translate-linux-x64-gnu": "0.1.0",
+    "@margin/pdf-translate-win32-x64": "0.1.0",
+    "@margin/pdf-translate-wasm": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "rolldown": "^1.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
