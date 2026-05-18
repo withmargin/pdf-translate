@@ -163,6 +163,13 @@ fn generate_latin_text_ops(text: &str, font_name: &str, font_size: f32, x: f32, 
     ops
 }
 
+/// Generate a thin underline rectangle matching the text width.
+/// Uses the same color as text (0.078 0.078 0.075) and draws 2pt below baseline.
+pub fn generate_underline_ops(x: f32, y: f32, width: f32) -> String {
+    let underline_y = y - 2.0;
+    format!("0.078 0.078 0.075 rg\n{x:.4} {underline_y:.4} {width:.4} 1 re\nf\n")
+}
+
 struct TextSegment {
     text: String,
     is_cjk: bool,
@@ -556,5 +563,66 @@ Q
         assert!(segs[0].is_cjk);   // 驗證
         assert!(!segs[1].is_cjk);  // " → "
         assert!(segs[2].is_cjk);   // 募資
+    }
+
+    // === Underline detection and stripping tests ===
+
+    #[test]
+    fn test_is_underline_rect() {
+        // Typical underline: thin (h=1), moderate width
+        assert!(is_underline_rect("60 1043 87.171875 1 re"));
+        assert!(is_underline_rect("148 1115 420 1 re"));
+        assert!(is_underline_rect("73 500 200 1.5 re"));
+    }
+
+    #[test]
+    fn test_is_not_underline_section_rule() {
+        // Full-width section dividers (w ≥ 500) should NOT be treated as underlines
+        assert!(!is_underline_rect("60 969 622 1 re"));
+        assert!(!is_underline_rect("0 0 792 1 re"));
+    }
+
+    #[test]
+    fn test_is_not_underline_thick_rect() {
+        // Rectangles with h > 1.5 are not underlines
+        assert!(!is_underline_rect("60 500 200 5 re"));
+        assert!(!is_underline_rect("60 500 200 20 re"));
+    }
+
+    #[test]
+    fn test_is_not_underline_tiny_rect() {
+        // Very small rects (w ≤ 5) are dots, not underlines
+        assert!(!is_underline_rect("60 500 3 1 re"));
+    }
+
+    #[test]
+    fn test_strip_removes_underline_rects() {
+        let input = b"q\n0.5 g\n60 1043 87 1 re\nf\n100 200 300 400 re\nf\nQ\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        // Underline rect (87x1) stripped
+        assert!(!text.contains("60 1043 87 1 re"));
+        // Normal rect (300x400) preserved
+        assert!(text.contains("100 200 300 400 re"));
+    }
+
+    #[test]
+    fn test_strip_preserves_section_rules() {
+        let input = b"q\n60 969 622 1 re\nf\nQ\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        // Full-width rule preserved
+        assert!(text.contains("60 969 622 1 re"));
+        assert!(text.contains("f"));
+    }
+
+    #[test]
+    fn test_strip_underline_followed_by_non_fill() {
+        // If a thin rect is NOT followed by "f", it should be preserved
+        let input = b"60 1043 87 1 re\nS\n";
+        let result = strip_text_operators(input);
+        let text = String::from_utf8_lossy(&result);
+        assert!(text.contains("60 1043 87 1 re"));
+        assert!(text.contains("S"));
     }
 }
