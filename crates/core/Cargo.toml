@@ -22,6 +22,7 @@ pdf_oxide = "0.3"
 anyhow = "1"
 ureq = "3"
 dirs = "6"
+lopdf = "0.34"
 
 [[test]]
 name = "generate_fixture"

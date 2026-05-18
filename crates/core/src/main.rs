@@ -34,8 +34,19 @@ enum Command {
         page: usize,
     },
 
-    /// Overlay translated text onto a new PDF
+    /// Overlay translated text onto a new PDF (new pages, no layout preservation)
     Overlay {
+        input: PathBuf,
+
+        #[arg(short, long)]
+        output: PathBuf,
+
+        #[arg(short, long)]
+        translations: PathBuf,
+    },
+
+    /// In-place text replacement preserving original layout
+    OverlayInplace {
         input: PathBuf,
 
         #[arg(short, long)]
@@ -72,6 +83,16 @@ fn main() -> Result<()> {
             let data = std::fs::read_to_string(&translations)?;
             let input_data: overlay::OverlayInput = serde_json::from_str(&data)?;
             overlay::overlay_translations(&input, &output, &input_data)?;
+            eprintln!("Translated PDF written to {}", output.display());
+        }
+        Command::OverlayInplace {
+            input,
+            output,
+            translations,
+        } => {
+            let data = std::fs::read_to_string(&translations)?;
+            let input_data: overlay::OverlayInput = serde_json::from_str(&data)?;
+            overlay::overlay_inplace(&input, &output, &input_data)?;
             eprintln!("Translated PDF written to {}", output.display());
         }
     }

@@ -1,8 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use pdf_oxide::document::PdfDocument;
 use pdf_oxide::writer::{DocumentBuilder, EmbeddedFont, PageSize};
 use serde::Deserialize;
 use std::path::Path;
 
+use crate::content_stream;
 use crate::fonts;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +91,128 @@ pub fn overlay_translations(
 
     let bytes = builder.build()?;
     std::fs::write(output_path, bytes)?;
+
+    Ok(())
+}
+
+/// In-place text replacement: strip original text from content stream,
+/// write translated text using the same page coordinates.
+/// Preserves all non-text elements (images, backgrounds, shapes).
+pub fn overlay_inplace(
+    input_path: &Path,
+    output_path: &Path,
+    translations: &OverlayInput,
+) -> Result<()> {
+    use lopdf::{dictionary, Document, Object, Stream};
+
+    let needs_cjk = translations
+        .blocks
+        .iter()
+        .any(|b| fonts::text_needs_cjk(&b.text));
+
+    let latin_font_name = "TransLatin";
+    let cjk_font_name = "TransCJK";
+
+    // Use pdf_oxide to read content streams (better decompression)
+    let source = PdfDocument::open(input_path)?;
+    let page_count = source.page_count()?;
+
+    // Use lopdf for raw PDF object manipulation
+    let mut doc = Document::load(input_path).context("loading PDF with lopdf")?;
+
+    let helvetica_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+
+    // Group blocks by page
+    let mut blocks_by_page: Vec<Vec<&TranslatedBlock>> = vec![vec![]; page_count];
+    for block in &translations.blocks {
+        if block.page < page_count {
+            blocks_by_page[block.page].push(block);
+        }
+    }
+
+    let page_ids: Vec<_> = doc.page_iter().collect();
+
+    for (page_idx, blocks) in blocks_by_page.iter().enumerate() {
+        if blocks.is_empty() {
+            continue;
+        }
+
+        let page_id = page_ids[page_idx];
+
+        // Step 1: Get original content stream via pdf_oxide and strip text
+        let original_content = source
+            .get_page_content_data(page_idx)
+            .context("reading page content stream")?;
+        let graphics_only = content_stream::strip_text_operators(&original_content);
+
+        // Step 2: Generate new text operators
+        let mut text_ops = String::new();
+        for block in blocks {
+            let use_cjk = needs_cjk && fonts::text_needs_cjk(&block.text);
+            let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
+
+            text_ops.push_str(&content_stream::generate_text_ops(
+                &block.text,
+                font_name,
+                block.font_size as f32,
+                block.x as f32,
+                block.y as f32,
+                use_cjk,
+            ));
+        }
+
+        // Step 3: Combine and create new content stream object
+        let new_content = content_stream::build_replaced_content(&graphics_only, &text_ops);
+        let stream = Stream::new(dictionary! {}, new_content);
+        let stream_id = doc.add_object(stream);
+
+        // Step 4: Replace page's Contents reference
+        if let Ok(page_obj) = doc.get_object_mut(page_id) {
+            if let Object::Dictionary(dict) = page_obj {
+                dict.set("Contents", Object::Reference(stream_id));
+            }
+        }
+
+        // Step 5: Add font to page's Resources/Font dictionary
+        if let Ok(page_obj) = doc.get_object_mut(page_id) {
+            if let Object::Dictionary(dict) = page_obj {
+                let resources = dict
+                    .get_mut(b"Resources")
+                    .ok()
+                    .and_then(|r| r.as_dict_mut().ok());
+
+                if let Some(resources) = resources {
+                    let fonts = resources
+                        .get_mut(b"Font")
+                        .ok()
+                        .and_then(|f| f.as_dict_mut().ok());
+
+                    if let Some(fonts) = fonts {
+                        fonts.set(latin_font_name, Object::Reference(helvetica_id));
+                    } else {
+                        resources.set(
+                            "Font",
+                            dictionary! {
+                                latin_font_name => Object::Reference(helvetica_id),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "  Page {page_idx}: replaced content stream ({} blocks)",
+            blocks.len()
+        );
+    }
+
+    doc.save(output_path).context("saving PDF")?;
 
     Ok(())
 }
