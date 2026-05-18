@@ -81,14 +81,23 @@ program
     const known = KNOWN_PROVIDERS[providerName];
     const modelName = opts.model || known?.defaultModel || "unknown";
 
-    const provider = opts.dryRun
-      ? { apiKey: "", baseUrl: "", model: modelName }
-      : resolveProvider({
-          provider: opts.provider,
-          model: opts.model,
-          apiKey: opts.apiKey,
-          baseUrl: opts.baseUrl,
-        });
+    let provider;
+    try {
+      provider = opts.dryRun
+        ? { apiKey: "", baseUrl: "", model: modelName }
+        : resolveProvider({
+            provider: opts.provider,
+            model: opts.model,
+            apiKey: opts.apiKey,
+            baseUrl: opts.baseUrl,
+          });
+    } catch (e) {
+      if (opts.json) {
+        fail("NO_API_KEY", e instanceof Error ? e.message : String(e));
+      }
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
 
     // Extract
     let extraction;

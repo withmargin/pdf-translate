@@ -62,9 +62,22 @@ export function resolveProvider(opts: {
 
   const apiKey = opts.apiKey || process.env[known.envKey];
   if (!apiKey) {
-    throw new Error(
-      `No API key found. Set ${known.envKey} or pass --api-key.`,
-    );
+    const lines = [
+      `No API key found for provider "${providerName}".`,
+      "",
+      "To get started, set one of these environment variables:",
+      "",
+      "  export OPENAI_API_KEY=sk-...          # OpenAI (default)",
+      "  export ANTHROPIC_API_KEY=sk-ant-...   # Claude",
+      "  export GEMINI_API_KEY=...             # Gemini",
+      "",
+      "Or pass directly:",
+      `  pdf-translate input.pdf --api-key <key> --provider ${providerName}`,
+      "",
+      "Or use a local model (no key needed):",
+      "  pdf-translate input.pdf --base-url http://localhost:11434/v1 --model qwen3",
+    ];
+    throw new Error(lines.join("\n"));
   }
 
   return {
