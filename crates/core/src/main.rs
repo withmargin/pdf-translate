@@ -27,6 +27,11 @@ enum Command {
         input: PathBuf,
     },
 
+    /// Extract PDF content as HTML (layout-preserving)
+    Html {
+        input: PathBuf,
+    },
+
     /// Dump raw page content stream (debug)
     DumpContent {
         input: PathBuf,
@@ -74,6 +79,10 @@ fn main() -> Result<()> {
         Command::Markdown { input } => {
             let md = markdown::to_markdown(&input)?;
             println!("{md}");
+        }
+        Command::Html { input } => {
+            let html = markdown::to_html(&input)?;
+            println!("{html}");
         }
         Command::Overlay {
             input,

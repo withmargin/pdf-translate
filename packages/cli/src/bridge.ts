@@ -85,14 +85,23 @@ export function extractText(pdfPath: string): ExtractionResult {
   return JSON.parse(output);
 }
 
+export function extractHtml(pdfPath: string): string {
+  return execFileSync(binary(), ["html", pdfPath], {
+    encoding: "utf-8",
+    maxBuffer: 100 * 1024 * 1024,
+  });
+}
+
 export function overlayTranslations(
   inputPath: string,
   outputPath: string,
   translationsPath: string,
+  inplace: boolean = true,
 ): void {
+  const cmd = inplace ? "overlay-inplace" : "overlay";
   execFileSync(
     binary(),
-    ["overlay", inputPath, "--output", outputPath, "--translations", translationsPath],
-    { encoding: "utf-8" },
+    [cmd, inputPath, "--output", outputPath, "--translations", translationsPath],
+    { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024 },
   );
 }

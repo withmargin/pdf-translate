@@ -26,6 +26,7 @@ program
   .option("-m, --model <model>", "Model name (uses provider default if omitted)")
   .option("--api-key <key>", "API key (or set via environment variable)")
   .option("--base-url <url>", "Custom OpenAI-compatible API endpoint")
+  .option("--pages <range>", "Page range to translate (e.g. '0-4' for first 5 pages)")
   .action(async (input: string, opts) => {
     const inputPath = resolve(input);
     const outputPath =
@@ -46,24 +47,35 @@ program
     console.log(`Input:     ${inputPath}`);
     console.log(`Output:    ${outputPath}`);
     console.log(`Language:  ${opts.sourceLang || "auto"} → ${opts.lang}`);
+    if (opts.pages) console.log(`Pages:     ${opts.pages}`);
     console.log();
 
     console.log("Extracting text from PDF...");
     const extraction = extractText(inputPath);
-    const blockCount = extraction.pages.reduce(
+
+    // Filter pages if --pages specified
+    let pagesToTranslate = extraction.pages;
+    if (opts.pages) {
+      const [start, end] = opts.pages.split("-").map(Number);
+      pagesToTranslate = extraction.pages.filter(
+        (p) => p.page >= start && p.page <= (end ?? start),
+      );
+    }
+
+    const blockCount = pagesToTranslate.reduce(
       (sum, p) => sum + p.blocks.length,
       0,
     );
-    console.log(`  Found ${extraction.total_pages} pages, ${blockCount} text blocks`);
+    console.log(`  Found ${extraction.total_pages} total pages, translating ${pagesToTranslate.length} pages (${blockCount} text blocks)`);
 
     if (blockCount === 0) {
-      console.log("No text found in PDF. The file may be scanned/image-based.");
+      console.log("No text found in selected pages.");
       process.exit(1);
     }
 
     console.log("Translating...");
-    const allBlocks = extraction.pages.flatMap((p) => p.blocks);
-    const translations = await translatePages(extraction.pages, {
+    const allBlocks = pagesToTranslate.flatMap((p) => p.blocks);
+    const translations = await translatePages(pagesToTranslate, {
       provider,
       targetLang: opts.lang,
       sourceLang: opts.sourceLang,
