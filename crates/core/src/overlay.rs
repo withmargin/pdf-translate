@@ -197,14 +197,25 @@ pub fn overlay_inplace(
         let mut text_ops = String::new();
         for block in blocks {
             assert_eq!(block.page, page_idx, "Block page mismatch: block.page={} but processing page_idx={}", block.page, page_idx);
-            let use_cjk = needs_cjk && fonts::text_needs_cjk(&block.text);
+
+            // Strip tabs and right-align tab+number blocks within their bounding box
+            let clean_text = block.text.replace('\t', "");
+            let has_tab = block.text.contains('\t');
+            let x = if has_tab && clean_text.trim().chars().all(|c| c.is_ascii_digit()) {
+                let num_width = clean_text.trim().len() as f64 * block.font_size * 0.5;
+                (block.x + block.width - num_width) as f32
+            } else {
+                block.x as f32
+            };
+
+            let use_cjk = needs_cjk && fonts::text_needs_cjk(&clean_text);
             let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
 
             text_ops.push_str(&content_stream::generate_text_ops(
-                &block.text,
+                &clean_text,
                 font_name,
                 block.font_size as f32,
-                block.x as f32,
+                x,
                 block.y as f32,
                 if use_cjk { cjk_ctx.as_ref() } else { None },
             ));
