@@ -63,6 +63,7 @@ export interface TextBlock {
   height: number;
   font_size: number;
   font_name: string | null;
+  color?: [number, number, number];
 }
 
 export interface PageInfo {

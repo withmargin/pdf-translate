@@ -18,6 +18,8 @@ pub struct TranslatedBlock {
     pub width: f64,
     pub height: f64,
     pub font_size: f64,
+    #[serde(default)]
+    pub color: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +228,7 @@ pub fn overlay_inplace(
                 block.font_size as f32,
                 x,
                 block.y as f32,
+                block.color,
                 if use_cjk { cjk_ctx.as_ref() } else { None },
             ));
 
@@ -445,6 +448,7 @@ mod tests {
                 width: 200.0,
                 height: 20.0,
                 font_size: 12.0,
+                color: None,
             }],
             font_path: None,
         };

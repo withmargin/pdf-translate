@@ -13,6 +13,8 @@ pub struct TextBlock {
     pub height: f64,
     pub font_size: f64,
     pub font_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +54,7 @@ pub fn extract_text(path: &Path) -> Result<ExtractionResult> {
                 height: span.bbox.height as f64,
                 font_size: span.font_size as f64,
                 font_name: Some(span.font_name.clone()),
+                color: Some([span.color.r, span.color.g, span.color.b]),
             })
             .collect();
 
@@ -175,7 +178,7 @@ mod tests {
     }
 
     fn make_block(page: usize, text: &str, x: f64, y: f64, w: f64, size: f64) -> TextBlock {
-        TextBlock { page, text: text.to_string(), x, y, width: w, height: size, font_size: size, font_name: None }
+        TextBlock { page, text: text.to_string(), x, y, width: w, height: size, font_size: size, font_name: None, color: None }
     }
 
     #[test]

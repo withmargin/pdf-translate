@@ -120,10 +120,14 @@ pub fn generate_text_ops(
     font_size: f32,
     x: f32,
     y: f32,
+    color: Option<[f32; 3]>,
     cjk_ctx: Option<&CjkTextContext>,
 ) -> String {
+    let [r, g, b] = color.unwrap_or([0.078, 0.078, 0.075]);
+    let color_op = format!("{r:.4} {g:.4} {b:.4} rg\n");
+
     if cjk_ctx.is_none() {
-        return generate_latin_text_ops(text, font_name, font_size, x, y);
+        return generate_latin_text_ops(text, font_name, font_size, x, y, &color_op);
     }
 
     let ctx = cjk_ctx.unwrap();
@@ -141,7 +145,7 @@ pub fn generate_text_ops(
             for c in seg.text.chars() {
                 let gid = (ctx.glyph_lookup)(c);
                 ops.push_str("BT\n");
-                ops.push_str("0.078 0.078 0.075 rg\n");
+                ops.push_str(&color_op);
                 if gid != 0 {
                     ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
                     ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
@@ -174,7 +178,7 @@ pub fn generate_text_ops(
         } else {
             // Pure ASCII Latin — use Helvetica with literal string
             ops.push_str("BT\n");
-            ops.push_str("0.078 0.078 0.075 rg\n");
+            ops.push_str(&color_op);
             ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
             ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
             let escaped = seg.text
@@ -193,10 +197,10 @@ pub fn generate_text_ops(
     ops
 }
 
-fn generate_latin_text_ops(text: &str, font_name: &str, font_size: f32, x: f32, y: f32) -> String {
+fn generate_latin_text_ops(text: &str, font_name: &str, font_size: f32, x: f32, y: f32, color_op: &str) -> String {
     let mut ops = String::new();
     ops.push_str("BT\n");
-    ops.push_str("0.078 0.078 0.075 rg\n");
+    ops.push_str(color_op);
     ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
     ops.push_str(&format!("1 0 0 1 {x:.4} {y:.4} Tm\n"));
 
@@ -398,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_generate_text_ops_latin() {
-        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, None);
+        let ops = generate_text_ops("Hello World", "Helvetica", 12.0, 72.0, 500.0, None, None);
         assert!(ops.contains("BT"));
         assert!(ops.contains("/Helvetica 12.0000 Tf"));
         assert!(ops.contains("1 0 0 1 72.0000 500.0000 Tm"));
@@ -412,7 +416,7 @@ mod tests {
             Box::new(|c: char| (c as u16) + 100),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
+        let ops = generate_text_ops("你好", "CJKFont", 12.0, 72.0, 500.0, None, Some(&ctx));
         assert!(ops.contains("/CJKFont 12.0000 Tf"));
         // Per-char rendering: each char gets its own BT/ET
         assert!(ops.contains("<4FC4> Tj"));
@@ -427,7 +431,7 @@ mod tests {
             Box::new(|c: char| c as u16),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, Some(&ctx));
+        let ops = generate_text_ops("你好", "NotoSansCJKtc", 12.0, 72.0, 500.0, None, Some(&ctx));
         assert!(ops.contains("/NotoSansCJKtc 12.0000 Tf"));
         assert!(ops.contains("<4F60> Tj"));
         assert!(ops.contains("<597D> Tj"));
@@ -435,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_generate_text_ops_escapes_parens() {
-        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, None);
+        let ops = generate_text_ops("Hello (World)", "Helvetica", 12.0, 72.0, 500.0, None, None);
         assert!(ops.contains("(Hello \\(World\\)) Tj"));
     }
 
@@ -532,7 +536,7 @@ Q
             Box::new(|c: char| c as u16),
             Box::new(|_c: char| 1000.0),
         );
-        let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, Some(&ctx));
+        let ops = generate_text_ops("打造AI原生", "CJKFont", 12.0, 72.0, 500.0, None, Some(&ctx));
         // CJK chars use CJK font
         assert!(ops.contains("/CJKFont"));
         assert!(ops.contains(&format!("<{:04X}> Tj", '打' as u16)));
@@ -605,14 +609,14 @@ Q
 
     #[test]
     fn test_generate_text_ops_empty_string() {
-        let ops = generate_text_ops("", "Helvetica", 12.0, 72.0, 500.0, None);
+        let ops = generate_text_ops("", "Helvetica", 12.0, 72.0, 500.0, None, None);
         assert!(ops.contains("() Tj"));
     }
 
     #[test]
     fn test_generate_text_ops_special_pdf_chars() {
         // Backslash and parentheses must be escaped in PDF literal strings
-        let ops = generate_text_ops("a\\b(c)d", "Helvetica", 12.0, 72.0, 500.0, None);
+        let ops = generate_text_ops("a\\b(c)d", "Helvetica", 12.0, 72.0, 500.0, None, None);
         assert!(ops.contains("(a\\\\b\\(c\\)d) Tj"));
     }
 

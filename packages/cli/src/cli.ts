@@ -206,6 +206,7 @@ program
         width: block.width,
         height: block.height,
         font_size: block.font_size,
+        ...(block.color ? { color: block.color } : {}),
       })),
     };
 
