@@ -137,7 +137,10 @@ pub fn generate_text_ops(
         ops.push_str("BT\n");
         ops.push_str("0.078 0.078 0.075 rg\n");
 
-        if seg.is_cjk {
+        let has_non_ascii = seg.text.chars().any(|c| c as u32 > 127);
+
+        if seg.is_cjk || has_non_ascii {
+            // Use CJK font with hex encoding for CJK chars and non-ASCII (smart quotes, dashes, etc.)
             ops.push_str(&format!("/{font_name} {font_size:.4} Tf\n"));
             ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
             let mut hex = String::new();
@@ -149,6 +152,7 @@ pub fn generate_text_ops(
             }
             ops.push_str(&format!("<{hex}> Tj\n"));
         } else {
+            // Pure ASCII Latin — use Helvetica with literal string
             ops.push_str(&format!("/{latin_font} {font_size:.4} Tf\n"));
             ops.push_str(&format!("1 0 0 1 {cursor_x:.4} {y:.4} Tm\n"));
             let escaped = seg.text
