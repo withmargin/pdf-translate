@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            package: pdf-translate-darwin-arm64
+            binary: pdf-translate-core
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            package: pdf-translate-darwin-x64
+            binary: pdf-translate-core
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            package: pdf-translate-linux-x64-gnu
+            binary: pdf-translate-core
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            package: pdf-translate-win32-x64
+            binary: pdf-translate-core.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/core/Cargo.toml
+
+      - name: Copy binary to package
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} packages/${{ matrix.package }}/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: packages/${{ matrix.package }}/
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM
+        run: |
+          cd crates/core
+          wasm-pack build --target nodejs --out-dir ../../packages/pdf-translate-wasm/wasm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-translate-wasm
+          path: packages/pdf-translate-wasm/
+
+  publish:
+    needs: [build, build-wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages/
+
+      - name: Make binaries executable
+        run: |
+          chmod +x packages/pdf-translate-darwin-arm64/pdf-translate-core || true
+          chmod +x packages/pdf-translate-darwin-x64/pdf-translate-core || true
+          chmod +x packages/pdf-translate-linux-x64-gnu/pdf-translate-core || true
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in pdf-translate-darwin-arm64 pdf-translate-darwin-x64 pdf-translate-linux-x64-gnu pdf-translate-win32-x64 pdf-translate-wasm; do
+            cd packages/$pkg
+            npm publish --access public || true
+            cd ../..
+          done
+
+      - name: Build and publish CLI
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd packages/cli
+          pnpm install --no-frozen-lockfile
+          pnpm build
+          npm publish --access public

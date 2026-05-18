@@ -1,0 +1,13 @@
+{
+  "name": "@margin/pdf-translate-wasm",
+  "version": "0.1.0",
+  "description": "pdf-translate WASM fallback (platform-independent)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withmargin/pdf-translate"
+  },
+  "files": [
+    "pdf-translate.wasm"
+  ]
+}

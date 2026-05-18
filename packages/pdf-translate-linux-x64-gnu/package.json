@@ -1,0 +1,19 @@
+{
+  "name": "@margin/pdf-translate-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "pdf-translate binary for Linux x64 (GNU)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withmargin/pdf-translate"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "pdf-translate-core"
+  ]
+}

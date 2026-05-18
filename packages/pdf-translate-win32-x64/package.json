@@ -1,0 +1,19 @@
+{
+  "name": "@margin/pdf-translate-win32-x64",
+  "version": "0.1.0",
+  "description": "pdf-translate binary for Windows x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withmargin/pdf-translate"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "pdf-translate-core.exe"
+  ]
+}

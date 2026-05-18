@@ -1,0 +1,19 @@
+{
+  "name": "@margin/pdf-translate-darwin-arm64",
+  "version": "0.1.0",
+  "description": "pdf-translate binary for macOS ARM64 (Apple Silicon)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/withmargin/pdf-translate"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "pdf-translate-core"
+  ]
+}
