@@ -1,6 +1,6 @@
 {
   "name": "pdf-translate",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Translate PDF documents using LLMs. Supports OpenAI, Claude, Gemini, and any OpenAI-compatible API.",
   "type": "module",
   "license": "MIT",
