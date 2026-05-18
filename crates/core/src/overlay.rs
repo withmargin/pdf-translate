@@ -273,10 +273,21 @@ pub fn overlay_inplace(
             }
         }
 
-        // Step 6: Remove link annotations (they cause stale underlines)
-        if let Ok(page_obj) = doc.get_object_mut(page_id) {
+        // Step 6: Keep link annotations for navigation but hide their borders
+        if let Ok(page_obj) = doc.get_object(page_id) {
             if let Object::Dictionary(dict) = page_obj {
-                dict.remove(b"Annots");
+                if let Ok(Object::Array(annots)) = dict.get(b"Annots") {
+                    let annot_refs: Vec<_> = annots.iter().filter_map(|a| {
+                        if let Object::Reference(r) = a { Some(*r) } else { None }
+                    }).collect();
+                    for annot_ref in annot_refs {
+                        if let Ok(Object::Dictionary(annot_dict)) = doc.get_object_mut(annot_ref) {
+                            annot_dict.set("Border", Object::Array(vec![
+                                Object::Integer(0), Object::Integer(0), Object::Integer(0),
+                            ]));
+                        }
+                    }
+                }
             }
         }
 

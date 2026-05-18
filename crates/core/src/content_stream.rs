@@ -8,6 +8,7 @@ pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
     let input = String::from_utf8_lossy(content);
     let mut output = Vec::new();
     let mut in_bt_block = false;
+    let mut pending_rect: Option<String> = None;
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -25,12 +26,45 @@ pub fn strip_text_operators(content: &[u8]) -> Vec<u8> {
             continue;
         }
 
-        // Outside BT/ET, keep everything (graphics, marked content, etc.)
+        // Detect thin rectangles (h ≤ 1.5) that are link underlines.
+        // Buffer "re" lines and check if the next line is "f" (fill).
+        // Full-width rules (w > 500) are kept as section dividers.
+        if trimmed.ends_with(" re") {
+            if is_underline_rect(trimmed) {
+                pending_rect = Some(line.to_string());
+                continue;
+            }
+        }
+
+        if let Some(ref _rect) = pending_rect {
+            if trimmed == "f" || trimmed == "f*" {
+                // Skip both the rect and the fill — it's an underline
+                pending_rect = None;
+                continue;
+            } else {
+                // Not a fill after the rect — flush the rect
+                output.extend_from_slice(_rect.as_bytes());
+                output.push(b'\n');
+                pending_rect = None;
+            }
+        }
+
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
 
     output
+}
+
+fn is_underline_rect(line: &str) -> bool {
+    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+    if parts.len() != 5 || parts[4] != "re" {
+        return false;
+    }
+    let w: f32 = parts[2].parse().unwrap_or(0.0);
+    let h: f32 = parts[3].parse().unwrap_or(0.0);
+    // Thin rectangle (h ≤ 1.5) that isn't full-width (w < 500 = not a section rule)
+    h.abs() <= 1.5 && w.abs() < 500.0 && w.abs() > 5.0
 }
 
 /// Context for CJK text generation with glyph lookup and width calculation.
