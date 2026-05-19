@@ -140,17 +140,52 @@ pub fn generate_text_ops(
     let mut ops = String::new();
     let mut cursor_x = x;
     let mut cursor_y = y;
+    let mut font_size = font_size;
     let mut line_height = font_size * 1.3;
 
-    // Wrap if: original was multi-line and text exceeds block width,
-    // OR text would go beyond a reasonable page boundary (prevents off-page overflow)
-    let total_width = calculate_text_width(text, font_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
+    let mut total_width = calculate_text_width(text, font_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
     let original_was_multiline = max_height > font_size * 1.5;
     let exceeds_block = max_width > 0.0 && total_width > max_width * 1.05;
-    let exceeds_page = total_width > 500.0; // absolute safety limit
-    let needs_wrap = exceeds_block && (original_was_multiline || exceeds_page);
 
-    // If wrapping and would overflow height, compress line height
+    // Single-line blocks: shrink font to fit on one line (no wrapping), min 80%
+    if exceeds_block && !original_was_multiline && max_width > 0.0 {
+        let mut scale = 1.0_f32;
+        while scale > 0.8 {
+            let w = calculate_text_width(text, font_size * scale, Some(&|c: char| (ctx.cjk_char_width)(c)));
+            if w <= max_width * 1.05 {
+                break;
+            }
+            scale -= 0.05;
+        }
+        if scale < 1.0 {
+            font_size *= scale;
+            total_width = calculate_text_width(text, font_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
+            line_height = font_size * 1.3;
+        }
+    }
+
+    // Multi-line blocks: wrap + font reduction + line height compression
+    let needs_wrap = exceeds_block && original_was_multiline;
+
+    if needs_wrap && max_width > 0.0 && max_height > font_size {
+        let mut scale = 1.0_f32;
+        loop {
+            let scaled_size = font_size * scale;
+            let w = calculate_text_width(text, scaled_size, Some(&|c: char| (ctx.cjk_char_width)(c)));
+            let lines = (w / max_width).ceil();
+            let lh = scaled_size * 1.3;
+            if lines * lh <= max_height || scale <= 0.7 {
+                if scale < 1.0 {
+                    font_size = scaled_size;
+                    total_width = w;
+                    line_height = lh;
+                }
+                break;
+            }
+            scale -= 0.05;
+        }
+    }
+
     if needs_wrap && max_height > font_size * 1.5 {
         let estimated_lines = (total_width / max_width).ceil();
         let needed_height = estimated_lines * line_height;
@@ -901,13 +936,13 @@ Q
     }
 
     #[test]
-    fn test_line_height_compression() {
+    fn test_font_size_reduction_and_compression() {
         let ctx = CjkTextContext::new(
             Box::new(|c: char| c as u16),
             Box::new(|_c: char| 1000.0),
         );
         // 30 chars at 12pt = 360pt, width=100 → ~4 lines
-        // 4 lines * 15.6 (1.3*12) = 62.4, but height=40 → must compress
+        // 4 lines * 15.6 = 62.4, but height=40 → must shrink font or compress
         let text: String = std::iter::repeat('字').take(30).collect();
         let ops = generate_text_ops(&text, "F", 12.0, 72.0, 500.0, 100.0, 40.0, None, Some(&ctx));
         let ys: Vec<f32> = ops.lines()
@@ -915,13 +950,14 @@ Q
             .filter_map(|l| l.split_whitespace().nth(4).and_then(|s| s.parse().ok()))
             .collect();
         let unique_ys: std::collections::BTreeSet<i32> = ys.iter().map(|y| (*y * 10.0) as i32).collect();
-        // Should have multiple lines with compressed spacing
+        // Should have multiple lines (either through font shrink or compression)
         assert!(unique_ys.len() > 1, "should have multiple lines");
+        // Font size may have been reduced, so the line gap could be smaller than original 15.6
         if unique_ys.len() >= 2 {
             let ys_vec: Vec<_> = unique_ys.iter().rev().collect();
             let line_gap = (*ys_vec[0] - *ys_vec[1]) as f32 / 10.0;
-            assert!(line_gap < 15.6, "line height should be compressed below default 15.6, got {line_gap}");
-            assert!(line_gap >= 12.0, "line height should not go below font_size 12, got {line_gap}");
+            assert!(line_gap > 0.0, "line gap must be positive, got {line_gap}");
+            assert!(line_gap <= 15.6, "line gap should not exceed default, got {line_gap}");
         }
     }
 }

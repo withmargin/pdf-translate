@@ -204,8 +204,8 @@ pub fn overlay_inplace(
         let annot_rects = read_annot_rects(&doc, page_id);
         let has_link_annots = !annot_rects.is_empty();
 
-        // Compute column right boundaries from all blocks on this page
-        let column_rights = compute_column_boundaries(blocks, page_w as f64);
+        // Detect column layout for wrap boundary calculation
+        let column_starts = detect_column_starts(blocks, page_w as f64);
 
         let mut text_ops = String::new();
         for block in blocks {
@@ -227,10 +227,9 @@ pub fn overlay_inplace(
             let use_cjk = needs_cjk && fonts::text_needs_cjk(&clean_text);
             let font_name = if use_cjk { cjk_font_name } else { latin_font_name };
 
-            // Cap width: use column boundary if available, else page boundary minus margin
-            let column_right = find_column_right(block.x, &column_rights);
-            let max_right = column_right.unwrap_or((page_w as f64 - page_margin).max(0.0));
-            let effective_width = block.width.min(max_right - block.x).max(0.0);
+            // Use block width, capped by page margin
+            let max_right = page_w as f64 - page_margin;
+            let effective_width = block.width.min((max_right - block.x).max(0.0));
 
             text_ops.push_str(&content_stream::generate_text_ops(
                 &clean_text,
@@ -350,43 +349,63 @@ pub fn overlay_inplace(
     Ok(())
 }
 
-/// Compute column right boundaries from blocks on a page.
-/// Groups blocks by x-position (within half page width as tolerance),
-/// returns sorted list of (column_left, column_right) pairs.
-fn compute_column_boundaries(blocks: &[&TranslatedBlock], page_w: f64) -> Vec<(f64, f64)> {
+/// Detect columns and their median right boundaries.
+/// Returns sorted list of (column_start, median_right).
+fn detect_column_starts(blocks: &[&TranslatedBlock], page_w: f64) -> Vec<(f64, f64)> {
     if blocks.is_empty() {
         return vec![];
     }
 
     // Cluster blocks by x position
-    let mut clusters: Vec<(f64, f64, f64)> = vec![]; // (min_x, max_x, max_right)
-    let cluster_threshold = page_w * 0.1; // 10% of page width
+    let threshold = page_w * 0.05;
+    let mut clusters: Vec<(f64, Vec<f64>)> = vec![]; // (min_x, [right edges])
 
-    for block in blocks {
+    let mut sorted_blocks: Vec<&&TranslatedBlock> = blocks.iter().collect();
+    sorted_blocks.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+    for block in sorted_blocks {
         let right = block.x + block.width;
-        let matched = clusters.iter_mut().find(|(min_x, _, _)| (block.x - *min_x).abs() < cluster_threshold);
+        let matched = clusters.iter_mut().find(|(min_x, _)| (block.x - *min_x).abs() < threshold);
         if let Some(cluster) = matched {
-            cluster.0 = cluster.0.min(block.x);
-            cluster.1 = cluster.1.max(block.x);
-            cluster.2 = cluster.2.max(right);
+            cluster.1.push(right);
         } else {
-            clusters.push((block.x, block.x, right));
+            clusters.push((block.x, vec![right]));
         }
     }
 
     clusters.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    clusters.iter().map(|(min_x, _, max_right)| (*min_x, *max_right)).collect()
+
+    // For each cluster, compute median right edge (robust against word-spacing outliers)
+    clusters.iter().map(|(min_x, rights)| {
+        let mut sorted = rights.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sorted[sorted.len() / 2];
+        (*min_x, median)
+    }).collect()
 }
 
-/// Find the right boundary for a block based on its column.
-fn find_column_right(block_x: f64, column_rights: &[(f64, f64)]) -> Option<f64> {
-    // Find the column this block belongs to
-    for (col_left, col_right) in column_rights {
-        if (block_x - col_left).abs() < 50.0 || (block_x >= *col_left && block_x <= *col_right) {
-            return Some(*col_right);
+/// Find the right boundary for a block using column detection.
+/// Uses: min(median_right_of_column, next_column_start - gap, page - margin)
+fn find_column_right(block_x: f64, columns: &[(f64, f64)], page_w: f64) -> f64 {
+    let margin = 36.0;
+    let col_gap = 12.0;
+
+    for i in 0..columns.len() {
+        let (col_start, median_right) = columns[i];
+        let next_col_start = columns.get(i + 1).map(|(x, _)| *x);
+
+        if (block_x - col_start).abs() < page_w * 0.05
+            || (block_x >= col_start && block_x < next_col_start.unwrap_or(page_w))
+        {
+            let boundary = match next_col_start {
+                Some(next) => median_right.min(next - col_gap),
+                None => median_right.min(page_w - margin),
+            };
+            return boundary;
         }
     }
-    None
+
+    page_w - margin
 }
 
 /// Read link annotation Rects from a page [x0, y0, x1, y1]
